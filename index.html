@@ -16,8 +16,8 @@
   <!-- Tailwind é usado para acelerar o layout; o CSS abaixo mantém a coleta utilizável offline. -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" defer></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.2/jspdf.umd.min.js" defer></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.4/jspdf.plugin.autotable.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.4/dist/jspdf.plugin.autotable.min.js" defer></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" defer></script>
 
   <style>
@@ -660,10 +660,92 @@
       $('anomalyList').innerHTML=list.length?list.map(c=>`<div class="anomaly-item"><div><div class="anomaly-name">${escapeHtml(c.turma)} · ${escapeHtml(c.turno)}</div><div class="anomaly-detail">Hoje: ${c.today} · Média dos dias com registro: ${c.average7}</div></div><div class="anomaly-drop">−${c.dropPercent}%</div></div>`).join(''):'<div class="empty-note">Nenhuma queda brusca identificada entre as turmas com histórico suficiente.</div>';
     }
 
+    // Carrega jsPDF e AutoTable sob demanda, usando CDN primária e fallback automático.
+    // As dependências são verificadas no objeto global e na instância real do jsPDF.
+    let pdfLibrariesPromise_ = null;
+
+    function hasJsPdf_(){
+      return typeof window.jspdf?.jsPDF === 'function';
+    }
+
+    function hasAutoTable_(){
+      if(!hasJsPdf_())return false;
+      try{return typeof new window.jspdf.jsPDF().autoTable === 'function';}
+      catch(error){return false;}
+    }
+
+    function loadPdfScriptCandidates_(urls, isReady){
+      return (async()=>{
+        let lastError=null;
+        for(const src of urls){
+          if(isReady())return;
+          // Se a URL primária já foi declarada no HEAD, ela já teve sua oportunidade
+          // de carregar. Em caso de falha, segue diretamente para o CDN alternativo.
+          const alreadyDeclared=[...document.scripts].some(script=>script.src===src);
+          if(alreadyDeclared)continue;
+          try{
+            await new Promise((resolve,reject)=>{
+              const script=document.createElement('script');
+              let settled=false;
+              const finish=(error)=>{
+                if(settled)return;
+                settled=true;
+                clearTimeout(timer);
+                if(error){script.remove();reject(error);}else resolve();
+              };
+              const timer=setTimeout(()=>{
+                script.remove();
+                finish(new Error(`Tempo esgotado ao carregar ${src}`));
+              },18000);
+              script.src=src;
+              script.async=true;
+              script.crossOrigin='anonymous';
+              script.onload=()=>finish(isReady()?null:new Error(`Biblioteca não disponibilizada por ${src}`));
+              script.onerror=()=>finish(new Error(`Falha ao carregar ${src}`));
+              document.head.appendChild(script);
+            });
+          }catch(error){lastError=error;}
+        }
+        if(!isReady())throw lastError||new Error('Nenhum CDN disponibilizou a biblioteca solicitada.');
+      })();
+    }
+
+    async function ensurePdfLibraries_(){
+      if(hasJsPdf_()&&hasAutoTable_())return window.jspdf.jsPDF;
+      if(!pdfLibrariesPromise_){
+        pdfLibrariesPromise_=(async()=>{
+          await loadPdfScriptCandidates_([
+            'https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js',
+            'https://unpkg.com/jspdf@2.5.2/dist/jspdf.umd.min.js'
+          ],hasJsPdf_);
+          await loadPdfScriptCandidates_([
+            'https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.4/dist/jspdf.plugin.autotable.min.js',
+            'https://unpkg.com/jspdf-autotable@3.8.4/dist/jspdf.plugin.autotable.min.js'
+          ],hasAutoTable_);
+          if(!hasJsPdf_()||!hasAutoTable_())throw new Error('jsPDF ou AutoTable não ficou disponível após o carregamento.');
+          return window.jspdf.jsPDF;
+        })();
+      }
+      try{return await pdfLibrariesPromise_;}
+      finally{pdfLibrariesPromise_=null;}
+    }
+
     async function exportPdf(){
       const data=state.dashboard;if(!data){toast('Atualize os indicadores antes de gerar o relatório.','error');return;}
-      if(!window.jspdf?.jsPDF){toast('Biblioteca PDF não carregada. Verifique a conexão e tente novamente.','error');return;}
-      const {jsPDF}=window.jspdf;const doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});
+      let jsPDF;
+      try{
+        jsPDF=await ensurePdfLibraries_();
+      }catch(error){
+        console.error('Falha ao carregar as bibliotecas de PDF:',error);
+        toast('Biblioteca PDF não carregada. Verifique a conexão e tente novamente.','error');
+        return;
+      }
+      const doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});
+      if(typeof doc.autoTable!=='function'){
+        console.error('A extensão jsPDF-AutoTable não foi registrada na instância do documento.');
+        toast('A biblioteca de tabelas PDF não ficou disponível. Atualize a página e tente novamente.','error');
+        return;
+      }
       const navy=[20,33,61];const school=data.schoolName||'Unidade Escolar';const today=formatDatePt(data.today);
       doc.setFillColor(...navy);doc.rect(0,0,297,26,'F');doc.setTextColor(255,255,255);doc.setFont('helvetica','bold');doc.setFontSize(17);doc.text('FLUXO ESCOLAR',14,12);doc.setFont('helvetica','normal');doc.setFontSize(9);doc.text('RELATÓRIO DE PRESENÇA E PREVISÃO DE MERENDA',14,19);
       doc.setTextColor(25,35,50);doc.setFont('helvetica','bold');doc.setFontSize(13);doc.text(school,14,36);doc.setFont('helvetica','normal');doc.setFontSize(9);doc.text(`Data de referência: ${today}`,14,42);doc.text(`Gerado em: ${new Date().toLocaleString('pt-BR')}`,14,47);
