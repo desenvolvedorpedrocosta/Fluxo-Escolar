@@ -1,881 +1,634 @@
-<!doctype html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#14213d">
-  <meta name="description" content="Contagem diária de presença e planejamento do volume de merenda escolar.">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Fluxo Escolar">
-  <link rel="manifest" href="manifest.webmanifest">
-  <link rel="icon" href="icons/icon-192.png" type="image/png">
-  <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <title>Fluxo Escolar</title>
+/**
+ * PRISMA FLUXO ESCOLAR — Backend Google Apps Script
+ * Banco de dados: Google Sheets
+ * Timezone recomendado: America/Sao_Paulo
+ *
+ * Instalação:
+ * 1) Vincule este projeto a uma planilha Google.
+ * 2) Execute setupSistema() uma única vez e autorize.
+ * 3) Implante como Web App (executar como você; acesso: qualquer pessoa).
+ * 4) Cole a URL /exec em CONFIG.API_URL dentro de index.html.
+ */
 
-  <!-- Tailwind é usado para acelerar o layout; o CSS abaixo mantém a coleta utilizável offline. -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" defer></script>
-  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js" defer></script>
-  <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.4/dist/jspdf.plugin.autotable.min.js" defer></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" defer></script>
+const PF = Object.freeze({
+  APP_NAME: 'Prisma Fluxo Escolar',
+  TIMEZONE: 'America/Sao_Paulo',
+  DEFAULT_ADMIN_PIN: '1234',
+  SHEETS: {
+    REGISTROS: 'Registros',
+    TURMAS: 'Turmas',
+    CONFIG: 'Config',
+    AUDITORIA: 'Auditoria'
+  },
+  HEADERS: {
+    Registros: ['Data', 'Turno', 'Turma', 'Presentes', 'AtualizadoEm', 'RequestId', 'Dispositivo'],
+    Turmas: ['Turno', 'Turma', 'Ativa', 'Ordem', 'Matriculados'],
+    Config: ['Chave', 'Valor'],
+    Auditoria: ['DataHora', 'Acao', 'DataReferencia', 'Turno', 'RequestId', 'Detalhes']
+  },
+  CACHE_SECONDS: 150,
+  SESSION_SECONDS: 1800,
+  MAX_DASHBOARD_DAYS: 45
+});
 
-  <style>
-    :root{--navy:#14213d;--navy2:#1d3557;--teal:#0f766e;--ink:#172033;--muted:#697586;--line:#e5eaf0;--bg:#f4f7fb;--white:#fff;--ok:#087f5b;--warn:#b45309;--danger:#b42318}
-    *{box-sizing:border-box} html{background:var(--bg);scroll-behavior:smooth} body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--ink);background:var(--bg);min-height:100vh;padding-bottom:env(safe-area-inset-bottom)}
-    button,input{font:inherit} button{cursor:pointer;touch-action:manipulation} .app-header{background:linear-gradient(120deg,#14213d,#1d3557);color:#fff;box-shadow:0 8px 24px #14213d20}.header-inner{max-width:1160px;margin:auto;padding:18px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px}.brand{display:flex;align-items:center;gap:12px;min-width:0}.brand-mark{width:42px;height:42px;flex:0 0 42px;border-radius:14px;background:#ffffff18;border:1px solid #ffffff32;display:grid;place-items:center}.brand-mark svg{width:25px;height:25px}.brand-title{font-weight:800;font-size:17px;letter-spacing:.01em;line-height:1.2}.brand-sub{font-size:11px;color:#d9e4f1;margin-top:3px;letter-spacing:.07em;text-transform:uppercase}.lock-btn{width:42px;height:42px;border:1px solid #ffffff30;border-radius:13px;background:#ffffff12;color:#fff;display:grid;place-items:center}.lock-btn:active{transform:scale(.97)}
-    .main{max-width:1160px;margin:auto;padding:22px 18px 8px}.eyebrow{font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#718096}.page-title{font-size:clamp(23px,4vw,31px);line-height:1.15;font-weight:850;letter-spacing:-.035em;color:var(--navy);margin:5px 0}.page-lead{color:var(--muted);font-size:14px;line-height:1.5;margin:0}.top-line{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin-bottom:22px}.sync-pill{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:700;padding:8px 11px;border-radius:999px;background:#e8f5ef;color:#087f5b;white-space:nowrap}.sync-pill.offline{background:#fff4e5;color:#9a5800}.sync-dot{width:7px;height:7px;border-radius:50%;background:currentColor}
-    .panel{background:#fff;border:1px solid var(--line);border-radius:19px;box-shadow:0 3px 14px #17203308}.toolbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;padding:15px 16px;margin-bottom:16px}.turn-switch{display:inline-flex;padding:4px;background:#eef2f7;border-radius:13px;gap:4px}.turn-btn{border:0;background:transparent;color:#526071;padding:10px 17px;border-radius:10px;font-size:13px;font-weight:800}.turn-btn.active{background:#fff;color:var(--navy);box-shadow:0 2px 7px #14213d16}.date-label{font-size:12px;color:var(--muted);font-weight:700}.count-overview{display:flex;align-items:center;gap:10px}.mini-total{font-size:12px;color:#64748b}.mini-total strong{font-size:20px;color:var(--navy);margin-left:4px}
-    .class-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.class-card{padding:15px;border:1px solid var(--line);border-radius:17px;background:#fff;box-shadow:0 2px 10px #14213d07;min-width:0}.class-card-top{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:13px}.class-name{font-size:14px;font-weight:850;letter-spacing:.01em;color:var(--navy)}.class-meta{font-size:10px;color:#8994a4;font-weight:700}.counter-row{display:flex;align-items:center;gap:8px}.counter-btn{width:44px;height:44px;flex:0 0 44px;border-radius:13px;border:1px solid #dbe3ed;background:#f8fafc;color:#30445f;font-size:23px;font-weight:500;display:grid;place-items:center}.counter-btn.plus{background:#e9f3f2;border-color:#cce3df;color:#0b7168}.counter-btn:active{transform:scale(.95)}.count-input{width:100%;min-width:0;height:48px;border:1px solid #dfe6ef;border-radius:13px;text-align:center;font-size:22px;font-weight:850;color:var(--navy);outline:none;background:#fff;font-variant-numeric:tabular-nums}.count-input:focus{border-color:#4b8a9a;box-shadow:0 0 0 3px #0f766e16}.class-foot{height:15px;margin-top:8px;font-size:10px;color:#96a0ae;display:flex;justify-content:space-between}.progress-track{height:4px;border-radius:8px;background:#eef2f6;margin-top:6px;overflow:hidden}.progress-fill{height:100%;background:#6da8a0;border-radius:8px}
-    .action-bar{position:sticky;bottom:10px;z-index:5;margin-top:18px;display:grid;grid-template-columns:1.2fr 1fr;gap:9px;padding:10px;border:1px solid #dfe6ef;background:#ffffffeb;backdrop-filter:blur(12px);border-radius:18px;box-shadow:0 10px 28px #14213d18}.btn{border:0;border-radius:13px;padding:13px 15px;font-size:13px;font-weight:850;display:inline-flex;justify-content:center;align-items:center;gap:8px;min-height:46px}.btn-primary{background:var(--navy);color:#fff}.btn-primary:disabled{opacity:.55;cursor:wait}.btn-secondary{background:#edf2f7;color:#34445b}.btn-outline{background:#fff;border:1px solid #dce4ee;color:var(--navy)}.btn-teal{background:#0f766e;color:#fff}.btn-danger{background:#fff0ef;color:#a62b22}.small-btn{min-height:36px;padding:8px 11px;font-size:12px;border-radius:10px}.footnote{text-align:center;font-size:11px;color:#8b96a5;margin:18px 0 0}
-    .screen{display:none}.screen.active{display:block}.lock-btn[hidden]{display:none!important}.summary-screen{background:#0e1b31;color:#fff;min-height:100vh;padding:22px 18px 38px}.summary-inner{max-width:900px;margin:auto}.summary-top{display:flex;justify-content:space-between;align-items:center;gap:12px}.summary-title{font-size:clamp(24px,5vw,38px);font-weight:850;letter-spacing:-.04em;margin:38px 0 6px}.summary-sub{color:#b7c6da;font-size:14px}.summary-hero{border:1px solid #ffffff20;background:linear-gradient(135deg,#1b3559,#173f55);border-radius:24px;margin:24px 0;padding:25px 22px}.summary-kicker{font-size:11px;text-transform:uppercase;letter-spacing:.16em;color:#c4d8e9;font-weight:800}.summary-number{font-size:clamp(68px,16vw,112px);font-weight:900;letter-spacing:-.07em;line-height:1.05;margin:8px 0;font-variant-numeric:tabular-nums}.summary-caption{font-size:15px;color:#c6d6e7}.summary-shifts{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:15px}.summary-shift{background:#ffffff12;border:1px solid #ffffff15;border-radius:15px;padding:13px}.summary-shift span{display:block;font-size:11px;color:#c3d2e4}.summary-shift strong{font-size:24px;display:block;margin-top:3px}.summary-list{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.summary-row{display:flex;justify-content:space-between;align-items:center;gap:10px;background:#ffffff0d;border:1px solid #ffffff13;border-radius:12px;padding:12px 13px}.summary-row span{font-size:13px;color:#d5e0ed;font-weight:650}.summary-row strong{font-size:19px;font-variant-numeric:tabular-nums}.summary-actions{display:flex;gap:9px;flex-wrap:wrap;margin:22px 0}
-    .admin-header{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:18px}.admin-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.kpi-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:18px 0}.kpi{padding:16px}.kpi-label{font-size:11px;color:#718096;font-weight:750;text-transform:uppercase;letter-spacing:.07em}.kpi-value{font-size:28px;font-weight:900;color:var(--navy);margin:7px 0 2px;font-variant-numeric:tabular-nums}.kpi-note{font-size:11px;color:#7c8797}.period-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:12px 0 18px}.period-card{padding:15px}.period-card h3{font-size:12px;font-weight:850;color:#5b6879;margin:0 0 10px}.period-value{font-size:22px;font-weight:900;color:var(--navy)}.period-break{font-size:11px;color:#7b8797;margin-top:5px;line-height:1.55}.chart-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0}.chart-panel{padding:17px;min-width:0}.panel-title{font-size:14px;font-weight:850;color:var(--navy);margin:0 0 3px}.panel-desc{font-size:11px;color:#8a95a4;margin:0 0 14px}.chart-wrap{position:relative;height:265px}.anomaly-panel{padding:17px;margin-top:12px}.anomaly-item{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:11px 0;border-bottom:1px solid #edf0f4}.anomaly-item:last-child{border-bottom:0}.anomaly-name{font-weight:800;font-size:13px;color:#2a3445}.anomaly-detail{font-size:11px;color:#7f8b9b;margin-top:3px}.anomaly-drop{font-size:12px;font-weight:850;color:#a83227;background:#fff0ed;padding:7px 9px;border-radius:9px;white-space:nowrap}.empty-note{padding:15px;background:#f6f8fb;border-radius:12px;color:#748195;font-size:12px}
-    .modal-backdrop{position:fixed;inset:0;background:#101a2bc7;z-index:20;display:none;align-items:center;justify-content:center;padding:18px}.modal-backdrop.open{display:flex}.modal{width:min(100%,420px);background:#fff;border-radius:20px;padding:21px;box-shadow:0 20px 65px #0004}.modal h2{font-size:20px;font-weight:850;color:var(--navy);margin:0 0 5px}.modal p{font-size:13px;color:#718096;margin:0 0 16px}.field{display:block;width:100%;height:48px;border:1px solid #dce4ee;border-radius:12px;padding:0 13px;margin:8px 0 13px;outline:none}.field:focus{border-color:#4b8a9a;box-shadow:0 0 0 3px #0f766e16}.modal-actions{display:flex;gap:8px;margin-top:8px}.modal-actions .btn{flex:1}.toast{position:fixed;z-index:50;left:50%;bottom:25px;transform:translate(-50%,20px);opacity:0;pointer-events:none;background:#14213d;color:#fff;padding:12px 16px;border-radius:12px;box-shadow:0 10px 30px #0003;font-size:13px;font-weight:700;max-width:calc(100vw - 32px);transition:.22s}.toast.show{opacity:1;transform:translate(-50%,0)}.toast.error{background:#9f2d25}.toast.success{background:#087f5b}.loading-inline{display:inline-block;width:15px;height:15px;border:2px solid #ffffff80;border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
-    @media(min-width:760px){.class-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.main{padding-top:28px}.class-card{padding:17px}.action-bar{max-width:520px;margin-left:auto}.summary-list{grid-template-columns:repeat(4,1fr)}}
-    @media(max-width:640px){.header-inner{padding:14px 15px}.brand-title{font-size:15px}.main{padding:18px 13px 8px}.top-line{align-items:flex-start;flex-direction:column}.toolbar{align-items:flex-start}.count-overview{margin-left:auto}.turn-btn{padding:9px 13px}.kpi-grid{grid-template-columns:repeat(2,1fr);gap:8px}.kpi{padding:13px}.kpi-value{font-size:24px}.chart-grid{grid-template-columns:1fr}.chart-wrap{height:245px}.period-grid{gap:7px}.period-card{padding:11px}.period-value{font-size:18px}.summary-list{grid-template-columns:repeat(2,1fr)}}
-    @media(max-width:360px){.class-grid{grid-template-columns:1fr}.summary-shifts{grid-template-columns:1fr}.action-bar{grid-template-columns:1fr}.count-overview{width:100%;justify-content:flex-end}}
-    #loginScreen[hidden],#splashScreen[hidden]{display:none!important}.app-shell{display:none}.app-shell.visible{display:block}
-    .splash-screen{position:fixed;inset:0;z-index:100;background:linear-gradient(145deg,#14213d,#1d4560);color:#fff;display:grid;place-items:center;transition:opacity .45s ease,visibility .45s ease}.splash-screen.fade-out{opacity:0;visibility:hidden}.splash-content{text-align:center;padding:24px;animation:splashRise .65s ease both}.splash-logo{width:82px;height:82px;margin:0 auto 18px;border-radius:26px;background:#ffffff16;border:1px solid #ffffff35;display:grid;place-items:center;box-shadow:0 15px 38px #08132355}.splash-logo svg{width:48px;height:48px}.splash-title{font-size:26px;font-weight:900;letter-spacing:-.04em}.splash-sub{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:#c7d8e8;margin-top:7px}@keyframes splashRise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
-    .auth-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px 16px;background:radial-gradient(circle at 15% 10%,#dfeeea 0,transparent 32%),var(--bg)}.auth-card{width:min(100%,440px);background:#fff;border:1px solid var(--line);border-radius:24px;padding:26px;box-shadow:0 18px 55px #14213d12}.auth-brand{display:flex;align-items:center;gap:11px;margin-bottom:24px}.auth-brand-mark{width:44px;height:44px;border-radius:14px;background:var(--navy);display:grid;place-items:center;color:#fff}.auth-title{font-size:24px;font-weight:900;letter-spacing:-.04em;color:var(--navy);margin:0 0 6px}.auth-lead{font-size:13px;line-height:1.55;color:var(--muted);margin:0 0 20px}.auth-label{display:block;font-size:11px;font-weight:800;color:#526071;margin:13px 0 6px}.auth-input{width:100%;height:50px;border:1px solid #dce4ee;border-radius:12px;padding:0 13px;outline:none;color:var(--ink);background:#fff}.auth-input:focus{border-color:#4b8a9a;box-shadow:0 0 0 3px #0f766e16}.auth-submit{width:100%;margin-top:17px}.auth-admin-button{width:100%;display:flex;align-items:center;gap:12px;margin-top:12px;padding:12px 14px;border:1px solid #d9e2ec;border-radius:13px;background:#f8fafc;color:var(--navy);font-size:13px;font-weight:800;text-align:left}.auth-admin-button svg{width:21px;height:21px;flex:0 0 21px;color:#31536f}.auth-admin-button .admin-access-copy{display:flex;flex:1;flex-direction:column;gap:2px}.auth-admin-button .admin-access-copy small{font-size:11px;font-weight:600;color:#718096}.auth-admin-button:focus-visible{outline:3px solid #0f766e35;outline-offset:2px}.auth-hint{font-size:11px;color:#7b8797;line-height:1.5;margin:10px 0 0}.install-card{margin-top:18px;padding:14px;border-radius:15px;background:#f3f7fa;border:1px solid #e3ebf1}.install-card h3{font-size:12px;font-weight:850;color:var(--navy);margin:0 0 6px}.install-card p{font-size:11px;line-height:1.55;color:#64748b;margin:0}.install-card ol{font-size:11px;line-height:1.6;color:#526071;padding-left:18px;margin:7px 0}.install-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.install-actions .btn{min-height:38px;padding:8px 11px;font-size:11px}.auth-share{width:100%;margin-top:12px}.header-tools{display:flex;align-items:center;gap:7px}.header-tool{min-height:38px;padding:8px 10px;border:1px solid #ffffff30;border-radius:11px;background:#ffffff12;color:#fff;font-size:11px;font-weight:800;display:inline-flex;align-items:center;justify-content:center;gap:6px}.header-tool svg{width:16px;height:16px}.operator-caption{font-size:11px;color:#718096;margin-top:5px;font-weight:700}.app-footer{text-align:center;padding:12px 16px 24px;color:#7d8999;font-size:11px;line-height:1.7}.app-footer a{color:#526b86;text-decoration:none}.share-link{width:100%;min-width:0;height:44px;border:1px solid #dce4ee;border-radius:10px;padding:0 10px;font-size:11px;color:#526071;background:#f8fafc}.qr-wrap{display:grid;place-items:center;min-height:190px;padding:12px;background:#f8fafc;border:1px solid #e5eaf0;border-radius:14px;margin:13px 0}.qr-wrap img,.qr-wrap canvas{max-width:100%;height:auto}.share-modal-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.share-modal-actions .btn{font-size:12px;padding:11px 8px}.install-hidden{display:none!important}
-    .app-footer{text-align:center;padding:4px 16px 8px;color:#7d8999;font-size:11px;line-height:1.55}
-    .install-fab{position:fixed;right:16px;bottom:16px;z-index:12;border:0;border-radius:999px;padding:11px 15px;background:#0f766e;color:#fff;font-size:12px;font-weight:850;box-shadow:0 8px 24px #14213d35}
-    .install-modal-steps{background:#f4f7fb;border:1px solid #e5eaf0;border-radius:13px;padding:12px 14px;margin:10px 0 14px;font-size:12px;line-height:1.6;color:#526071}
-    .install-modal-steps ol{margin:6px 0 0;padding-left:19px}
-    .install-modal-steps p{margin:0;color:#526071}
-    @media(max-width:640px){.auth-card{padding:22px 19px}.header-tools{gap:5px}.header-tool{width:37px;height:37px;min-height:37px;padding:7px;font-size:0}.header-tool svg{width:17px;height:17px}.app-footer{padding:4px 12px 8px}.install-fab{right:12px;bottom:12px}}
-  </style>
-</head>
-<body>
-  <div class="splash-screen" id="splashScreen" aria-label="Iniciando Fluxo Escolar">
-    <div class="splash-content">
-      <div class="splash-logo" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none"><path d="M8 12.5 24 5l16 7.5v23L24 43 8 35.5v-23Z" stroke="white" stroke-width="2.3"/><path d="m8.5 13 15.5 7.5L39.5 13M24 20.5V42" stroke="white" stroke-width="2.3"/><path d="m16 25 5.2 5 10.8-11" stroke="#77d3c1" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-      <div class="splash-title">Fluxo Escolar</div>
-      <div class="splash-sub">Presença · Merenda · Gestão</div>
-    </div>
-  </div>
+/** Executar manualmente uma vez após vincular o script à planilha. */
+function setupSistema() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss) throw new Error('Vincule o Apps Script a uma planilha Google antes de executar a configuração.');
+  ss.setSpreadsheetTimeZone(PF.TIMEZONE);
 
-  <section class="auth-screen" id="loginScreen" hidden>
-    <div class="auth-card">
-      <div class="auth-brand">
-        <div class="auth-brand-mark" aria-hidden="true"><svg width="25" height="25" viewBox="0 0 32 32" fill="none"><path d="M6 7.5 16 3l10 4.5v17L16 29 6 24.5v-17Z" stroke="white" stroke-width="1.8"/><path d="m6.5 8 9.5 4.5L25.5 8M16 13v15" stroke="white" stroke-width="1.8"/><path d="m11 17 3.3 3.2L21.5 13" stroke="#77d3c1" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-        <div><div style="font-weight:900;color:#14213d">Fluxo Escolar</div><div class="brand-sub" style="color:#8290a2">Controle de presença e merenda</div></div>
-      </div>
-      <h1 class="auth-title">Identificação do responsável</h1>
-      <p class="auth-lead">Informe seu nome e o PIN operacional compartilhado com a equipe para iniciar a contagem.</p>
-      <form id="operationalLoginForm" autocomplete="on">
-        <label class="auth-label" for="operatorNameInput">Seu nome</label>
-        <input class="auth-input" id="operatorNameInput" name="name" type="text" maxlength="80" autocomplete="name" placeholder="Digite seu nome" required>
-        <label class="auth-label" for="operationalPinInput">PIN operacional de 4 dígitos</label>
-        <input class="auth-input" id="operationalPinInput" name="pin" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="one-time-code" placeholder="••••" required>
-        <button class="btn btn-primary auth-submit" id="operationalLoginButton" type="submit">Entrar no sistema <span aria-hidden="true">→</span></button>
-      </form>
-      <button type="button" class="auth-admin-button" id="openAdminFromLogin" aria-label="Acesso administrativo: abrir painel administrativo">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg>
-        <span class="admin-access-copy"><span>Acesso administrativo</span><small>Entrar diretamente no painel administrativo</small></span>
-        <span aria-hidden="true">→</span>
-      </button>
+  Object.keys(PF.HEADERS).forEach(function(name) {
+    const sheet = getOrCreateSheet_(ss, name);
+    ensureHeaders_(sheet, PF.HEADERS[name]);
+  });
 
-      <div class="install-card" id="installHelpCard">
-        <h3>Instale o Fluxo Escolar no celular</h3>
-        <p id="installGeneralText">Adicione o aplicativo à tela inicial para abrir rapidamente durante a rotina de contagem.</p>
-        <div id="iosInstallInstructions" class="install-hidden">
-          <ol>
-            <li>Copie o link do aplicativo abaixo.</li>
-            <li>Abra o link no navegador <strong>Safari</strong> do iPhone.</li>
-            <li>Toque no botão <strong>Compartilhar</strong> do Safari.</li>
-            <li>Selecione <strong>Adicionar à Tela de Início</strong> e confirme em Adicionar.</li>
-          </ol>
-        </div>
-        <div class="install-actions">
-          <button type="button" class="btn btn-outline install-hidden" id="installAppButton">Instalar aplicativo</button>
-          <button type="button" class="btn btn-outline" id="copyInstallLink">Copiar link do aplicativo</button>
-        </div>
-      </div>
-      <button type="button" class="btn btn-secondary auth-share" id="openShareFromLogin">Compartilhar aplicativo · QR Code e link</button>
-    </div>
-  </section>
+  seedClasses_();
+  seedConfig_();
+  initializePin_();
+  formatSheets_();
 
-  <div class="app-shell" id="appShell">
-  <header class="app-header">
-    <div class="header-inner">
-      <div class="brand">
-        <div class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 32 32" fill="none"><path d="M6 7.5 16 3l10 4.5v17L16 29 6 24.5v-17Z" stroke="white" stroke-width="1.8"/><path d="m6.5 8 9.5 4.5L25.5 8M16 13v15" stroke="white" stroke-width="1.8"/><path d="m11 17 3.3 3.2L21.5 13" stroke="#77d3c1" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </div>
-        <div>
-          <div class="brand-title">Fluxo Escolar</div>
-          <div class="brand-sub">Presença · Merenda · Inteligência</div>
-        </div>
-      </div>
-      <div class="header-tools">
-        <button class="header-tool" id="openShareApp" aria-label="Compartilhar aplicativo" title="Compartilhar aplicativo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.7 10.7 6.6-4.4M8.7 13.3l6.6 4.4"/></svg>Compartilhar</button>
-        <button class="header-tool" id="switchOperator" aria-label="Trocar responsável" title="Trocar responsável"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7v5h-5M4 17v-5h5M5.5 9A7 7 0 0 1 18 6l2 1M4 17l2-1a7 7 0 0 0 12.5-3"/></svg>Trocar</button>
-        <button class="lock-btn" id="openAdmin" aria-label="Acessar painel administrativo" title="Painel administrativo">
-          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg>
-        </button>
-      </div>
-    </div>
-  </header>
+  return 'Prisma Fluxo configurado. Confira a aba Turmas e ajuste os turnos de acordo com a organização real da escola.';
+}
 
-  <main class="main">
-    <section class="screen active" id="collectionScreen">
-      <div class="top-line">
-        <div>
-          <div class="eyebrow">Modo operacional</div>
-          <h1 class="page-title">Contagem de presença</h1>
-          <p class="page-lead" id="schoolCaption">Registre os alunos presentes em cada sala.</p>
-          <div class="operator-caption" id="operatorCaption"></div>
-        </div>
-        <div class="sync-pill" id="syncPill"><span class="sync-dot"></span><span id="syncText">Conectando</span></div>
-      </div>
-
-      <div class="panel toolbar">
-        <div>
-          <div class="date-label" id="todayLabel">Hoje</div>
-          <div class="turn-switch" role="group" aria-label="Selecionar turno">
-            <button class="turn-btn active" data-turn="MANHÃ">☀ Manhã</button>
-            <button class="turn-btn" data-turn="TARDE">◒ Tarde</button>
-          </div>
-        </div>
-        <div class="count-overview"><div class="mini-total">Total neste turno <strong id="turnTotal">0</strong></div></div>
-      </div>
-
-      <div class="class-grid" id="classGrid" aria-live="polite">
-        <div class="panel" style="padding:22px;color:#718096;grid-column:1/-1">Carregando as turmas…</div>
-      </div>
-
-      <div class="action-bar">
-        <button class="btn btn-primary" id="saveCounts">Enviar contagem <span aria-hidden="true">→</span></button>
-        <button class="btn btn-secondary" id="showSummary">Visão da cozinha</button>
-      </div>
-      <p class="footnote">Os números ficam salvos neste dispositivo enquanto você preenche. Sem internet, o envio entra na fila para sincronização posterior.</p>
-    </section>
-
-    <section class="screen summary-screen" id="summaryScreen">
-      <div class="summary-inner">
-        <div class="summary-top">
-          <div class="brand-title" style="color:#fff">Fluxo Escolar · Cozinha</div>
-          <button class="btn btn-outline small-btn" id="backFromSummary">Voltar à coleta</button>
-        </div>
-        <h1 class="summary-title">Resumo de refeições</h1>
-        <p class="summary-sub" id="summarySchool">Unidade Escolar</p>
-        <div class="summary-hero">
-          <div class="summary-kicker">Total de alunos presentes · <span id="summaryTurn">Manhã</span></div>
-          <div class="summary-number" id="summaryTotal">0</div>
-          <div class="summary-caption">Refeições estimadas para este turno</div>
-          <div class="summary-shifts">
-            <div class="summary-shift"><span>Salas conferidas</span><strong id="summaryClasses">0 de 0</strong></div>
-            <div class="summary-shift"><span>Média por sala</span><strong id="summaryAverage">0</strong></div>
-          </div>
-        </div>
-        <h2 style="font-size:14px;font-weight:850;margin:24px 0 12px;color:#d7e5f3">Detalhamento por sala</h2>
-        <div class="summary-list" id="summaryList"></div>
-        <div class="summary-actions">
-          <button class="btn btn-teal" id="shareSummary">Compartilhar resumo</button>
-          <button class="btn btn-outline" id="printSummary">Imprimir resumo</button>
-        </div>
-        <div style="font-size:11px;color:#8095ad" id="summaryDate"></div>
-      </div>
-    </section>
-
-    <section class="screen" id="adminScreen">
-      <div class="admin-header">
-        <div>
-          <div class="eyebrow">Gestão e inteligência</div>
-          <h1 class="page-title">Painel administrativo</h1>
-          <p class="page-lead" id="adminSchoolCaption">Indicadores consolidados da unidade.</p>
-        </div>
-        <div class="admin-actions">
-          <button class="btn btn-outline small-btn" id="openSettings">Configurações</button>
-          <button class="btn btn-secondary small-btn" id="adminLogout">Sair</button>
-        </div>
-      </div>
-
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
-        <div class="date-label" id="adminUpdated">Aguardando dados</div>
-        <div class="admin-actions">
-          <button class="btn btn-outline small-btn" id="refreshDashboard">Atualizar dados</button>
-          <button class="btn btn-primary small-btn" id="downloadPdf">Exportar relatório PDF</button>
-        </div>
-      </div>
-
-      <div class="kpi-grid">
-        <div class="panel kpi"><div class="kpi-label">Presentes hoje</div><div class="kpi-value" id="kpiToday">—</div><div class="kpi-note" id="kpiTodaySplit">Manhã 0 · Tarde 0</div></div>
-        <div class="panel kpi"><div class="kpi-label">Dia anterior</div><div class="kpi-value" id="kpiYesterday">—</div><div class="kpi-note" id="kpiYesterdayDate">Comparativo diário</div></div>
-        <div class="panel kpi"><div class="kpi-label">Mesmo dia da semana</div><div class="kpi-value" id="kpiLastWeek">—</div><div class="kpi-note" id="kpiLastWeekDate">Comparativo semanal</div></div>
-        <div class="panel kpi"><div class="kpi-label">Variação vs. ontem</div><div class="kpi-value" id="kpiVariation">—</div><div class="kpi-note">Total geral da unidade</div></div>
-      </div>
-
-      <div class="eyebrow" style="margin:23px 0 8px">Evolução por período</div>
-      <div class="period-grid">
-        <div class="panel period-card"><h3>ÚLTIMOS 7 DIAS</h3><div class="period-value" id="period7">—</div><div class="period-break" id="period7Split"></div></div>
-        <div class="panel period-card"><h3>ÚLTIMOS 14 DIAS</h3><div class="period-value" id="period14">—</div><div class="period-break" id="period14Split"></div></div>
-        <div class="panel period-card"><h3>ÚLTIMOS 30 DIAS</h3><div class="period-value" id="period30">—</div><div class="period-break" id="period30Split"></div></div>
-      </div>
-
-      <div class="chart-grid">
-        <div class="panel chart-panel"><h2 class="panel-title">Hoje × ontem por turma</h2><p class="panel-desc">Comparação da quantidade de presentes em cada sala.</p><div class="chart-wrap"><canvas id="compareChart"></canvas></div></div>
-        <div class="panel chart-panel"><h2 class="panel-title">Tendência dos últimos 30 dias</h2><p class="panel-desc">Total geral e distribuição entre os turnos.</p><div class="chart-wrap"><canvas id="trendChart"></canvas></div></div>
-      </div>
-
-      <div class="panel anomaly-panel">
-        <h2 class="panel-title">Alerta de anomalias</h2>
-        <p class="panel-desc">Turmas com presença pelo menos 30% abaixo da média dos dias registrados na última semana (mínimo de três referências).</p>
-        <div id="anomalyList"><div class="empty-note">Carregando análise…</div></div>
-      </div>
-      <p class="footnote">Os indicadores consideram os registros existentes. Dias sem lançamento não são tratados como presença zero para calcular a média de referência.</p>
-    </section>
-  </main>
-  <footer class="app-footer">
-    <div><span id="footerYear"></span> | Criado e Desenvolvido por Pedro Costa</div>
-    <div><a href="mailto:desenvolvedorpedrocosta@gmail.com">desenvolvedorpedrocosta@gmail.com</a></div>
-  </footer>
-  </div>
-
-  <div class="modal-backdrop" id="pinModal" role="dialog" aria-modal="true" aria-labelledby="pinTitle">
-    <div class="modal">
-      <h2 id="pinTitle">Acesso administrativo</h2>
-      <p>Informe o PIN de quatro dígitos para abrir o painel de gestão.</p>
-      <form id="pinForm">
-        <input class="field" id="pinInput" type="password" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="one-time-code" placeholder="PIN de 4 dígitos" required>
-        <div class="modal-actions"><button type="button" class="btn btn-secondary" id="cancelPin">Cancelar</button><button class="btn btn-primary" id="submitPin" type="submit">Entrar</button></div>
-      </form>
-    </div>
-  </div>
-
-  <div class="modal-backdrop" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
-    <div class="modal">
-      <h2 id="settingsTitle">Configurações da unidade</h2>
-      <p>Atualize a identificação da escola ou o PIN administrativo.</p>
-      <label for="schoolNameInput" class="eyebrow">Nome da unidade</label>
-      <input class="field" id="schoolNameInput" maxlength="120" placeholder="Nome da escola">
-      <button class="btn btn-secondary" id="saveSchoolName" style="width:100%;margin-bottom:15px">Salvar nome da unidade</button>
-      <div style="height:1px;background:#edf0f4;margin:4px 0 14px"></div>
-      <label for="newOperationalPinInput" class="eyebrow">Novo PIN operacional da equipe (4 dígitos)</label>
-      <input class="field" id="newOperationalPinInput" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" placeholder="Novo PIN operacional">
-      <button class="btn btn-secondary" id="saveOperationalPin" style="width:100%;margin-bottom:15px">Alterar PIN operacional</button>
-      <div style="height:1px;background:#edf0f4;margin:4px 0 14px"></div>
-      <label for="newPinInput" class="eyebrow">Novo PIN administrativo (4 dígitos)</label>
-      <input class="field" id="newPinInput" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" placeholder="Novo PIN administrativo">
-      <div class="modal-actions"><button class="btn btn-secondary" id="closeSettings">Fechar</button><button class="btn btn-primary" id="saveNewPin">Alterar PIN</button></div>
-    </div>
-  </div>
-
-  <div class="modal-backdrop" id="installModal" role="dialog" aria-modal="true" aria-labelledby="installModalTitle">
-    <div class="modal">
-      <h2 id="installModalTitle">Instale o Fluxo Escolar</h2>
-      <p id="installModalIntro">Instale o aplicativo para abrir mais rapidamente e ter acesso à tela inicial do dispositivo.</p>
-      <div id="installModalSteps" class="install-modal-steps"></div>
-      <div class="modal-actions">
-        <button type="button" class="btn btn-secondary" id="closeInstallModal">Agora não</button>
-        <button type="button" class="btn btn-primary" id="installModalAction">Instalar aplicativo</button>
-      </div>
-    </div>
-  </div>
-
-  <div class="modal-backdrop" id="shareModal" role="dialog" aria-modal="true" aria-labelledby="shareModalTitle">
-    <div class="modal">
-      <h2 id="shareModalTitle">Compartilhar Fluxo Escolar</h2>
-      <p>Escaneie o QR Code ou copie o endereço para compartilhar o acesso ao aplicativo.</p>
-      <div class="qr-wrap" id="qrCodeContainer" aria-label="QR Code do aplicativo"></div>
-      <label for="shareAppLink" class="eyebrow">Link do aplicativo</label>
-      <input class="share-link" id="shareAppLink" type="text" readonly>
-      <div class="share-modal-actions">
-        <button class="btn btn-secondary" id="copyShareLink">Copiar link</button>
-        <button class="btn btn-primary" id="nativeShareApp">Compartilhar</button>
-      </div>
-      <div class="modal-actions"><button type="button" class="btn btn-outline" id="closeShareModal">Fechar</button></div>
-    </div>
-  </div>
-
-  <button type="button" class="install-fab" id="reopenInstallButton" aria-label="Instalar ou ver instruções de instalação">＋ Instalar app</button>
-
-  <div class="toast" id="toast" role="status" aria-live="polite"></div>
-
-  <script>
-    'use strict';
-    const CONFIG = {
-      API_URL: 'https://script.google.com/macros/s/AKfycbxb2qBPCJQgKC_xNtQLUW7PDOFWeIxgMek2qKr1NaeZbOrng0qR6RIj-Ffwe8_lHEL3oQ/exec',
-      APP_NAME: 'Fluxo Escolar',
-      DEFAULT_SCHOOL: 'Unidade Escolar',
-      QUEUE_KEY: 'fluxo_escolar_pending_v2',
-      LEGACY_QUEUE_KEY: String.fromCharCode(112,114,105,115,109,97,95,102,108,117,120,111,95,112,101,110,100,105,110,103,95,118,49),
-      DEVICE_KEY: 'fluxo_escolar_device_v2',
-      LEGACY_DEVICE_KEY: String.fromCharCode(112,114,105,115,109,97,95,102,108,117,120,111,95,100,101,118,105,99,101,95,118,49),
-      BOOTSTRAP_KEY: 'fluxo_escolar_bootstrap_v1',
-      OFFLINE_AUTH_KEY: 'fluxo_escolar_offline_auth_v1',
-      CHECKED_KEY_PREFIX: 'fluxo_escolar_checked_v1'
-    };
-
-    const state = {
-      bootstrap: null,
-      turn: 'MANHÃ',
-      sessionToken: null,
-      dashboard: null,
-      charts: { compare: null, trend: null },
-      busy: false,
-      installPrompt: null,
-      deviceId: getDeviceId_(),
-      operatorName: '',
-      operationalSessionToken: null,
-      appInitialized: false,
-      adminEnteredFromLogin: false
-    };
-
-    const $ = (id) => document.getElementById(id);
-    const activeClasses = () => (state.bootstrap?.turmas || fallbackClasses_()).filter(c => c.active && c.turno === state.turn).sort((a,b)=>a.ordem-b.ordem);
-    const localDateISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
-    const storageKey = () => `pf_counts_${localDateISO()}_${state.turn}`;
-    const checkedStorageKey = () => `${CONFIG.CHECKED_KEY_PREFIX}_${localDateISO()}_${state.turn}`;
-    const formatDatePt = (iso) => { const [y,m,d] = iso.split('-').map(Number); return new Date(y,m-1,d,12).toLocaleDateString('pt-BR',{weekday:'long',day:'2-digit',month:'long',year:'numeric'}); };
-    const escapeHtml = (value) => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-
-    function getDeviceId_(){
-      try { let id = localStorage.getItem(CONFIG.DEVICE_KEY); if(!id){ id = localStorage.getItem(CONFIG.LEGACY_DEVICE_KEY); if(id) localStorage.removeItem(CONFIG.LEGACY_DEVICE_KEY); } if(!id){ id = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`); } localStorage.setItem(CONFIG.DEVICE_KEY,id); return id; }
-      catch(e){ return `device-${Date.now()}`; }
-    }
-    function fallbackClasses_(){
-      const arr=[];let order=1;
-      ['6º ANO','7º ANO','8º ANO'].forEach(g=>['A','B','C','D'].forEach(l=>arr.push({turno:'TARDE',turma:`${g} ${l}`,active:true,ordem:order++,matriculados:0})));
-      ['9º ANO','1º ANO','2º ANO','3º ANO'].forEach(g=>['A','B','C','D'].forEach(l=>arr.push({turno:'MANHÃ',turma:`${g} ${l}`,active:true,ordem:order++,matriculados:0})));
-      return arr;
-    }
-    function toast(message,type=''){
-      const el=$('toast');el.textContent=message;el.className=`toast show ${type}`;
-      clearTimeout(toast._timer);toast._timer=setTimeout(()=>el.className='toast',3300);
-    }
-    function setSyncStatus(text,offline=false){ $('syncText').textContent=text; $('syncPill').classList.toggle('offline',offline); }
-    function wait(ms){return new Promise(resolve=>setTimeout(resolve,ms));}
-    function appShareUrl_(){return new URL('./',window.location.href).href;}
-    async function copyText_(text){
-      if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(text);return;}
-      const field=document.createElement('textarea');field.value=text;field.style.position='fixed';field.style.opacity='0';document.body.appendChild(field);field.select();
-      const ok=document.execCommand('copy');field.remove();if(!ok)throw new Error('A cópia automática não está disponível neste navegador.');
-    }
-    function openShareModal_(){
-      const url=appShareUrl_();$('shareAppLink').value=url;$('qrCodeContainer').innerHTML='';
-      if(window.QRCode){new QRCode($('qrCodeContainer'),{text:url,width:176,height:176,colorDark:'#14213d',colorLight:'#ffffff',correctLevel:QRCode.CorrectLevel.H});}
-      else{$('qrCodeContainer').textContent='Não foi possível carregar o gerador de QR Code. Verifique a conexão e tente novamente.';}
-      $('shareModal').classList.add('open');
-    }
-    async function shareAppNative_(){
-      const url=appShareUrl_();
-      try{if(navigator.share){await navigator.share({title:'Fluxo Escolar',text:'Acesse o aplicativo Fluxo Escolar.',url});}else{await copyText_(url);toast('Link do aplicativo copiado.','success');}}
-      catch(err){if(err.name!=='AbortError'){try{await copyText_(url);toast('Link copiado para compartilhar.','success');}catch(e){toast(e.message,'error');}}}
-    }
-    async function cacheOfflinePin_(pin){
-      if(!crypto.subtle) return;
-      const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);
-      const salt=Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
-      const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(`${salt}|${pin}`));
-      const hash=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
-      localStorage.setItem(CONFIG.OFFLINE_AUTH_KEY,JSON.stringify({salt,hash}));
-    }
-    async function validateOfflinePin_(pin){
-      try{
-        const saved=JSON.parse(localStorage.getItem(CONFIG.OFFLINE_AUTH_KEY)||'null');if(!saved||!saved.salt||!saved.hash||!crypto.subtle)return false;
-        const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(`${saved.salt}|${pin}`));
-        const hash=Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join('');
-        return hash===saved.hash;
-      }catch(e){return false;}
-    }
-    async function enterApplication_(name,offline=false,operationalSessionToken=null){
-      state.operatorName=name;state.operationalSessionToken=operationalSessionToken;state.sessionToken=null;state.appInitialized=false;
-      $('operatorCaption').textContent=`Responsável pela contagem: ${name}`;
-      $('loginScreen').hidden=true;$('splashScreen').classList.add('fade-out');$('appShell').classList.add('visible');
-      showScreen('collectionScreen');
-      await initializeApp_(offline);
-    }
-    async function loginOperational(event){
-      event.preventDefault();
-      const name=$('operatorNameInput').value.trim().replace(/\s+/g,' ');const pin=$('operationalPinInput').value.trim();
-      if(name.length<2){toast('Informe seu nome.','error');$('operatorNameInput').focus();return;}
-      if(!/^\d{4}$/.test(pin)){toast('Informe os quatro dígitos do PIN operacional.','error');$('operationalPinInput').focus();return;}
-      const button=$('operationalLoginButton');button.disabled=true;button.innerHTML='<span class="loading-inline"></span> Validando acesso';
-      try{
-        try{
-          const auth=await gasCall({action:'operationalLogin',name,pin,deviceId:state.deviceId});
-          await cacheOfflinePin_(pin).catch(()=>{});
-          await enterApplication_(name,false,auth.operationalSessionToken);
-        }catch(err){
-          if(err.server) throw err;
-          const validOffline=await validateOfflinePin_(pin);
-          if(!validOffline) throw new Error('Não foi possível validar o acesso. Conecte este dispositivo à internet e faça uma primeira entrada online para habilitar o acesso offline.');
-          await enterApplication_(name,true,null);
-          toast('Acesso offline autorizado neste dispositivo.','success');
-        }
-      }catch(err){toast(err.message||'Falha ao validar o acesso.','error');}
-      finally{button.disabled=false;button.innerHTML='Entrar no sistema <span aria-hidden="true">→</span>';}
-    }
-    function prepareInstallHelp_(){
-      const ua=navigator.userAgent||'';
-      state.isIOSInstall=/iPhone|iPad|iPod/i.test(ua)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
-      state.isStandalone=window.matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;
-      const ios=state.isIOSInstall&&!state.isStandalone;
-      if(ios){$('iosInstallInstructions').classList.remove('install-hidden');$('installGeneralText').textContent='No iPhone, a instalação é feita pelo Safari usando a opção Adicionar à Tela de Início.';}
-      else if(!state.isStandalone){$('installGeneralText').textContent='Adicione o Fluxo Escolar à tela inicial ou instale-o pelo menu do navegador.';}
-      else{$('installHelpCard').classList.add('install-hidden');}
-      $('reopenInstallButton').classList.toggle('install-hidden',state.isStandalone);
-      updateInstallModalContent_();
-    }
-    function updateInstallModalContent_(){
-      if(state.isStandalone){$('reopenInstallButton').classList.add('install-hidden');return;}
-      $('reopenInstallButton').classList.remove('install-hidden');
-      const intro=$('installModalIntro');const steps=$('installModalSteps');const action=$('installModalAction');
-      if(state.isIOSInstall){
-        intro.textContent='Deseja adicionar o Fluxo Escolar à Tela de Início do iPhone? Copie o link, abra-o no Safari e siga os passos abaixo.';
-        steps.innerHTML='<ol><li>Copie o link do aplicativo.</li><li>Abra o link no navegador <strong>Safari</strong> do iPhone.</li><li>Toque no botão <strong>Compartilhar</strong> do Safari.</li><li>Selecione <strong>Adicionar à Tela de Início</strong> e confirme em Adicionar.</li></ol>';
-        action.textContent='Copiar link e ver instruções';
-      }else if(state.installPrompt){
-        intro.textContent='Deseja instalar o Fluxo Escolar neste dispositivo? Toque no botão abaixo e confirme a instalação apresentada pelo navegador.';
-        steps.innerHTML='<p>Toque no botão abaixo e confirme a instalação exibida pelo navegador.</p>';
-        action.textContent='Instalar aplicativo';
-      }else{
-        intro.textContent='Deseja instalar o Fluxo Escolar neste dispositivo? Use o menu do navegador para adicioná-lo à tela inicial seguindo as instruções.';
-        steps.innerHTML='<ol><li><strong>Android:</strong> abra o menu ⋮ do navegador e selecione “Instalar aplicativo” ou “Adicionar à tela inicial”.</li><li><strong>Computador:</strong> procure o ícone de instalação na barra de endereço ou a opção “Instalar Fluxo Escolar” no menu do navegador.</li><li>Confirme a instalação quando o navegador solicitar.</li></ol>';
-        action.textContent='Copiar link e ver instruções';
-      }
-    }
-    function showInstallModal_(){
-      if(state.isStandalone)return;
-      updateInstallModalContent_();
-      $('installModal').classList.add('open');
-    }
-    async function triggerInstall_(){
-      if(state.installPrompt){
-        const promptEvent=state.installPrompt;state.installPrompt=null;
-        try{
-          await promptEvent.prompt();
-          const choice=await promptEvent.userChoice;
-          if(choice&&choice.outcome==='accepted'){$('installModal').classList.remove('open');$('reopenInstallButton').classList.add('install-hidden');}
-          else{updateInstallModalContent_();}
-        }catch(err){updateInstallModalContent_();toast('Não foi possível abrir a instalação automática. Use as instruções exibidas.','error');}
-        return;
-      }
-      await copyText_(appShareUrl_()).then(()=>toast(state.isIOSInstall?'Link copiado. Abra-o no Safari do iPhone e siga as instruções.':'Link do aplicativo copiado. Siga as instruções para instalar pelo navegador.','success')).catch(err=>toast(err.message,'error'));
-      updateInstallModalContent_();
+/** Endpoint público. O GET é usado apenas para consultar o resultado temporário de uma requisição. */
+function doGet(e) {
+  const params = (e && e.parameter) ? e.parameter : {};
+  if (params.action === 'poll') {
+    const rid = String(params.rid || '');
+    const callback = String(params.callback || '');
+    if (!/^[a-f0-9-]{24,80}$/i.test(rid) || callback !== '__prismaFluxoReceive') {
+      return jsonp_({ ok: false, error: 'Consulta inválida.' }, '__prismaFluxoReceive');
     }
 
-    // RPC: POST simples no-cors (sem preflight) + leitura JSONP do resultado temporário por ID imprevisível.
-    const pollResolvers = new Map();
-    window.__fluxoEscolarReceive = function(data){
-      if(!data || !data.requestId) return;
-      const resolver=pollResolvers.get(data.requestId);
-      if(resolver){pollResolvers.delete(data.requestId);resolver(data);}
-    };
-    function jsonpPoll_(requestId){
-      return new Promise((resolve,reject)=>{
-        const script=document.createElement('script');
-        const timer=setTimeout(()=>{pollResolvers.delete(requestId);script.remove();reject(new Error('Tempo esgotado ao consultar a resposta do servidor.'));},8000);
-        pollResolvers.set(requestId,(data)=>{clearTimeout(timer);script.remove();resolve(data);});
-        script.onerror=()=>{clearTimeout(timer);pollResolvers.delete(requestId);script.remove();reject(new Error('Não foi possível consultar a resposta do Apps Script.'));};
-        script.src=`${CONFIG.API_URL}${CONFIG.API_URL.includes('?')?'&':'?'}action=poll&rid=${encodeURIComponent(requestId)}&callback=__fluxoEscolarReceive&ts=${Date.now()}`;
-        document.head.appendChild(script);
-      });
+    const cache = CacheService.getScriptCache();
+    const key = 'pf_rpc_' + rid;
+    const raw = cache.get(key);
+    if (!raw) return jsonp_({ ok: false, pending: true, requestId: rid }, callback);
+    cache.remove(key);
+    let result;
+    try {
+      result = JSON.parse(raw);
+    } catch (err) {
+      result = { ok: false, error: 'Não foi possível interpretar a resposta do servidor.', requestId: rid };
     }
-    async function gasCall(payload){
-      if(!CONFIG.API_URL || CONFIG.API_URL.includes('COLE_A_URL')) throw new Error('Configure CONFIG.API_URL no início do index.html com a URL /exec do Apps Script.');
-      const requestId=crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}-${Math.random().toString(16).slice(2)}`;
-      const body={...payload,requestId,deviceId:state.deviceId};
-      let postError=null;
-      try{
-        await fetch(CONFIG.API_URL,{method:'POST',mode:'no-cors',cache:'no-store',headers:{'Content-Type':'text/plain;charset=UTF-8'},body:JSON.stringify(body)});
-      }catch(err){postError=err;}
-      const delays=[350,600,900,1300,1800,2200,2500];
-      let lastError=postError;
-      for(let i=0;i<delays.length;i++){
-        if(i>0) await wait(delays[i]);
-        try{
-          const result=await jsonpPoll_(requestId);
-          if(result.pending) continue;
-          if(!result.ok){const error=new Error(result.error||'O servidor não concluiu a operação.');error.server=true;throw error;}
-          return result;
-        }catch(err){
-          if(err.server) throw err;
-          lastError=err;
-          if(i===delays.length-1) break;
-        }
-      }
-      const error=new Error(postError ? 'Não foi possível confirmar a comunicação com o Apps Script. Verifique sua conexão.' : (lastError?.message||'O servidor não confirmou o recebimento.'));
-      error.network=true;throw error;
+    return jsonp_(result, callback);
+  }
+
+  if (params.health === '1') {
+    return ContentService.createTextOutput(JSON.stringify({
+      ok: true,
+      app: PF.APP_NAME,
+      time: Utilities.formatDate(new Date(), PF.TIMEZONE, "yyyy-MM-dd'T'HH:mm:ss"),
+      message: 'API disponível'
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  return ContentService.createTextOutput('Prisma Fluxo API ativa.').setMimeType(ContentService.MimeType.TEXT);
+}
+
+/**
+ * POST recebe JSON em text/plain para evitar preflight CORS.
+ * A resposta da operação fica temporariamente no ScriptCache e é obtida por doGet?action=poll.
+ */
+function doPost(e) {
+  let request = {};
+  let requestId = '';
+  try {
+    request = parsePost_(e);
+    requestId = String(request.requestId || '');
+    if (!/^[a-f0-9-]{24,80}$/i.test(requestId)) throw new Error('Identificador de requisição inválido.');
+
+    const cache = CacheService.getScriptCache();
+    const cacheKey = 'pf_rpc_' + requestId;
+    if (cache.get(cacheKey)) {
+      return ContentService.createTextOutput('ACCEPTED').setMimeType(ContentService.MimeType.TEXT);
     }
 
-    function readCounts(){
-      try{return JSON.parse(localStorage.getItem(storageKey())||'{}');}catch(e){return {};}
+    const result = routeRequest_(request);
+    result.requestId = requestId;
+    cache.put(cacheKey, safeStringify_(result), PF.CACHE_SECONDS);
+    return ContentService.createTextOutput('ACCEPTED').setMimeType(ContentService.MimeType.TEXT);
+  } catch (err) {
+    if (requestId && /^[a-f0-9-]{24,80}$/i.test(requestId)) {
+      CacheService.getScriptCache().put('pf_rpc_' + requestId, safeStringify_({
+        ok: false,
+        error: publicError_(err),
+        requestId: requestId
+      }), PF.CACHE_SECONDS);
     }
-    function getCheckedClasses_(){
-      let checked=[];
-      try{checked=JSON.parse(localStorage.getItem(checkedStorageKey())||'[]');}catch(e){}
-      if(!Array.isArray(checked))checked=[];
-      // Compatibilidade: valores positivos salvos por versões anteriores indicam sala preenchida.
-      const legacyCounts=readCounts();
-      Object.keys(legacyCounts).forEach(name=>{if(Number(legacyCounts[name])>0&&!checked.includes(name))checked.push(name);});
-      return new Set(checked);
-    }
-    function persistCounts(checkedClass=''){
-      const counts={};
-      document.querySelectorAll('.count-input').forEach(input=>{counts[input.dataset.class]=Math.max(0,parseInt(input.value,10)||0);});
-      try{
-        localStorage.setItem(storageKey(),JSON.stringify(counts));
-        if(checkedClass){const checked=getCheckedClasses_();checked.add(checkedClass);localStorage.setItem(checkedStorageKey(),JSON.stringify(Array.from(checked)));}
-      }catch(e){}
-      updateTurnTotal();
-    }
-    function updateTurnTotal(){
-      const total=Array.from(document.querySelectorAll('.count-input')).reduce((sum,input)=>sum+(parseInt(input.value,10)||0),0);
-      $('turnTotal').textContent=total;
-    }
-    function renderClasses(){
-      const classes=activeClasses();const counts=readCounts();
-      $('classGrid').innerHTML=classes.length?classes.map(c=>{
-        const value=Math.max(0,Number(counts[c.turma]||0));
-        const enrolled=Number(c.matriculados||0);
-        const pct=enrolled?Math.min(100,value/enrolled*100):0;
-        return `<article class="class-card" data-class-card="${escapeHtml(c.turma)}">
-          <div class="class-card-top"><div class="class-name">${escapeHtml(c.turma)}</div><div class="class-meta">${enrolled?`${enrolled} matriculados`:'CONTAGEM'}</div></div>
-          <div class="counter-row"><button class="counter-btn" data-action="dec" data-class="${escapeHtml(c.turma)}" aria-label="Diminuir ${escapeHtml(c.turma)}">−</button><input class="count-input" type="number" inputmode="numeric" min="0" ${enrolled?`max="${enrolled}"`:''} step="1" value="${value}" data-class="${escapeHtml(c.turma)}" aria-label="Presentes em ${escapeHtml(c.turma)}"><button class="counter-btn plus" data-action="inc" data-class="${escapeHtml(c.turma)}" aria-label="Aumentar ${escapeHtml(c.turma)}">+</button></div>
-          <div class="class-foot"><span>Alunos presentes</span><span>${enrolled?`${Math.round(pct)}% da turma`:''}</span></div>${enrolled?`<div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>`:''}
-        </article>`;
-      }).join(''):'<div class="panel" style="padding:22px;color:#9a5800;grid-column:1/-1">Não há turmas ativas neste turno. Confira a aba Turmas da planilha.</div>';
-      $('todayLabel').textContent=formatDatePt(localDateISO());
-      document.querySelectorAll('.turn-btn').forEach(btn=>btn.classList.toggle('active',btn.dataset.turn===state.turn));
-      updateTurnTotal();
-    }
-    function changeTurn(turn){persistCounts();state.turn=turn;renderClasses();}
+    return ContentService.createTextOutput('RECEIVED').setMimeType(ContentService.MimeType.TEXT);
+  }
+}
 
-    function recordsPayload(){
-      return activeClasses().map(c=>({turma:c.turma,presentes:Math.max(0,parseInt(document.querySelector(`.count-input[data-class="${CSS.escape(c.turma)}"]`)?.value,10)||0)}));
-    }
-    function getPending(){
-      let current=[];let legacy=[];
-      try{current=JSON.parse(localStorage.getItem(CONFIG.QUEUE_KEY)||'[]');}catch(e){}
-      try{legacy=JSON.parse(localStorage.getItem(CONFIG.LEGACY_QUEUE_KEY)||'[]');}catch(e){}
-      if(legacy.length){
-        const merged=new Map();
-        [...legacy,...current].forEach(item=>merged.set(`${item.date}|${item.turno}`,item));
-        current=Array.from(merged.values());
-        try{localStorage.setItem(CONFIG.QUEUE_KEY,JSON.stringify(current));localStorage.removeItem(CONFIG.LEGACY_QUEUE_KEY);}catch(e){}
-      }
-      return Array.isArray(current)?current:[];
-    }
-    function queuePending(payload){
-      const q=getPending();const key=`${payload.date}|${payload.turno}`;
-      const next=q.filter(item=>`${item.date}|${item.turno}`!==key);next.push(payload);
-      try{localStorage.setItem(CONFIG.QUEUE_KEY,JSON.stringify(next));}catch(e){}
-    }
-    function removePending(date,turno){const q=getPending().filter(item=>!(item.date===date&&item.turno===turno));try{localStorage.setItem(CONFIG.QUEUE_KEY,JSON.stringify(q));}catch(e){}}
+function parsePost_(e) {
+  if (!e) throw new Error('Requisição vazia.');
+  if (e.postData && e.postData.contents) {
+    const content = String(e.postData.contents);
+    try { return JSON.parse(content); } catch (ignore) {}
+  }
+  if (e.parameter && e.parameter.payload) {
+    return JSON.parse(String(e.parameter.payload));
+  }
+  throw new Error('Formato de dados não reconhecido.');
+}
 
-    async function submitCounts(showToast=true){
-      if(state.busy)return;
-      const records=recordsPayload();if(!records.length){toast('Não há turmas ativas para este turno.','error');return;}
-      persistCounts();
-      const payload={action:'saveBatch',date:localDateISO(),turno:state.turn,records,deviceId:state.deviceId,operatorName:state.operatorName,operationalSessionToken:state.operationalSessionToken};
-      state.busy=true;$('saveCounts').disabled=true;$('saveCounts').innerHTML='<span class="loading-inline"></span> Enviando';
-      try{
-        if(!navigator.onLine||!state.operationalSessionToken){queuePending(payload);setSyncStatus(!navigator.onLine?'Aguardando conexão':'Autenticação necessária',true);if(showToast)toast(!navigator.onLine?'Sem conexão. A contagem ficou salva neste dispositivo e será sincronizada quando a internet voltar.':'A contagem foi guardada. Conecte-se e entre novamente para autorizar a sincronização.','success');return;}
-        const result=await gasCall(payload);removePending(payload.date,payload.turno);setSyncStatus('Sincronizado');
-        if(showToast)toast(`${result.total} presentes enviados ao sistema.`,'success');
-        return result;
-      }catch(err){
-        if(err.network){queuePending(payload);setSyncStatus('Aguardando conexão',true);if(showToast)toast('Sem confirmação do servidor. A contagem ficou salva neste dispositivo e entrará na fila.','error');}
-        else if(/sessão operacional|sessão expirou/i.test(err.message||'')){queuePending(payload);state.operationalSessionToken=null;setSyncStatus('Autenticação necessária',true);if(showToast)toast('Sua autenticação expirou. A contagem ficou guardada; entre novamente para sincronizar.','error');}
-        else if(showToast)toast(err.message,'error');
-        throw err;
-      }finally{
-        state.busy=false;$('saveCounts').disabled=false;$('saveCounts').innerHTML='Enviar contagem <span aria-hidden="true">→</span>';
-      }
-    }
-    async function flushQueue(){
-      if(!navigator.onLine||state.busy)return;
-      const queue=getPending();if(!queue.length){setSyncStatus('Conectado');return;}
-      if(!state.operationalSessionToken){setSyncStatus('Autenticação necessária',true);return;}
-      setSyncStatus(`Sincronizando ${queue.length}`,true);
-      for(const item of queue){
-        try{await gasCall({...item,action:'saveBatch',operatorName:state.operatorName,operationalSessionToken:state.operationalSessionToken});removePending(item.date,item.turno);}
-        catch(err){if(/sessão operacional|sessão expirou/i.test(err.message||''))state.operationalSessionToken=null;setSyncStatus('Sincronização pendente',true);return;}
-      }
-      setSyncStatus('Sincronizado');toast('Contagens pendentes sincronizadas.','success');
-    }
+function routeRequest_(request) {
+  const action = String(request.action || '');
+  switch (action) {
+    case 'bootstrap': return getBootstrap_();
+    case 'saveBatch': return saveBatch_(request);
+    case 'adminLogin': return adminLogin_(request);
+    case 'adminDashboard': requireAdmin_(request.sessionToken); return getDashboard_();
+    case 'adminChangePin': requireAdmin_(request.sessionToken); return changeAdminPin_(request);
+    case 'adminUpdateSchool': requireAdmin_(request.sessionToken); return updateSchoolName_(request);
+    default: throw new Error('Ação não reconhecida.');
+  }
+}
 
-    function showScreen(id){document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));$(id).classList.add('active');$('openAdmin').hidden=(id==='adminScreen');window.scrollTo({top:0,behavior:'smooth'});}
-    function openSummary(){
-      const records=recordsPayload();const total=records.reduce((s,r)=>s+r.presentes,0);
-      $('summaryTotal').textContent=total;$('summaryTurn').textContent=state.turn==='MANHÃ'?'Manhã':'Tarde';
-      $('summarySchool').textContent=state.bootstrap?.schoolName||CONFIG.DEFAULT_SCHOOL;
-      const rooms=activeClasses();const checked=getCheckedClasses_();const checkedCount=rooms.filter(room=>checked.has(room.turma)).length;
-      $('summaryClasses').textContent=`${checkedCount} de ${rooms.length}`;$('summaryAverage').textContent=records.length?(total/records.length).toFixed(1).replace('.',','):'0';
-      $('summaryList').innerHTML=records.map(r=>`<div class="summary-row"><span>${escapeHtml(r.turma)}</span><strong>${r.presentes}</strong></div>`).join('');
-      $('summaryDate').textContent=`${formatDatePt(localDateISO())} · Responsável: ${state.operatorName || 'Não informado'} · Valores atuais neste dispositivo`;
-      showScreen('summaryScreen');
-    }
-    function buildSummaryShareText_(){
-      const records=recordsPayload();
-      const total=records.reduce((sum,item)=>sum+item.presentes,0);
-      const lines=records.map(item=>`${item.turma}: ${item.presentes}`).join('\n');
-      const rooms=activeClasses();const checked=getCheckedClasses_();const checkedCount=rooms.filter(room=>checked.has(room.turma)).length;
-      return `FLUXO ESCOLAR — RESUMO DE REFEIÇÕES\n${state.bootstrap?.schoolName||CONFIG.DEFAULT_SCHOOL}\nData: ${formatDatePt(localDateISO())}\nTurno: ${state.turn}\nResponsável: ${state.operatorName||'Não informado'}\nSalas conferidas: ${checkedCount} de ${rooms.length}\n\nTOTAL: ${total} alunos presentes\n\n${lines}`;
-    }
-    async function shareCurrentSummary_(){
-      const text=buildSummaryShareText_();
-      try{
-        if(navigator.share){await navigator.share({title:'Resumo de refeições — Fluxo Escolar',text});}
-        else{await copyText_(text);toast('Resumo copiado. Agora você pode colá-lo na conversa desejada.','success');}
-      }catch(err){if(err.name!=='AbortError'){try{await copyText_(text);toast('Resumo copiado para compartilhar.','success');}catch(e){toast('Não foi possível compartilhar neste navegador.','error');}}}
-    }
-    function printSummary(){window.print();}
+function getBootstrap_() {
+  const config = readConfig_();
+  const classes = readClasses_();
+  return {
+    ok: true,
+    appName: PF.APP_NAME,
+    schoolName: config.SCHOOL_NAME || 'Unidade Escolar',
+    timezone: PF.TIMEZONE,
+    turmas: classes,
+    turns: ['MANHÃ', 'TARDE'],
+    anomalyThreshold: Number(config.ANOMALY_THRESHOLD || 0.70)
+  };
+}
 
-    async function openAdminFlow(){ $('pinInput').value='';$('pinModal').classList.add('open');setTimeout(()=>$('pinInput').focus(),100); }
-    async function loginAdmin(event){
-      event.preventDefault();const pin=$('pinInput').value.trim();if(!/^\d{4}$/.test(pin)){toast('Informe os quatro dígitos do PIN.','error');return;}
-      const enteredFromLogin=!$('loginScreen').hidden;
-      $('submitPin').disabled=true;$('submitPin').innerHTML='<span class="loading-inline"></span> Validando';
-      try{
-        const result=await gasCall({action:'adminLogin',pin,deviceId:state.deviceId});state.sessionToken=result.sessionToken;
-        $('submitPin').innerHTML='<span class="loading-inline"></span> Acessando painel administrativo…';
-        if(enteredFromLogin){
-          // Busca os dados sem revelar o app-shell nem ativar a tela operacional.
-          const dashboard=await loadDashboard(false);
-          state.adminEnteredFromLogin=true;
-          state.bootstrap=state.bootstrap||{schoolName:dashboard.schoolName||CONFIG.DEFAULT_SCHOOL,turmas:fallbackClasses_()};
-          state.bootstrap.schoolName=dashboard.schoolName||state.bootstrap.schoolName;
-          $('loginScreen').hidden=true;$('appShell').classList.add('visible');
-          showScreen('adminScreen');
-          renderDashboard(dashboard);
-        }else{
-          await loadDashboard();
-          state.adminEnteredFromLogin=false;
-          showScreen('adminScreen');
-        }
-        $('pinModal').classList.remove('open');
-        if(result.mustChangePin){$('schoolNameInput').value=result.schoolName||state.dashboard?.schoolName||'';$('settingsModal').classList.add('open');$('newPinInput').focus();toast('Por segurança, atualize o PIN administrativo.','success');}
-      }catch(err){
-        if(enteredFromLogin){
-          state.sessionToken=null;state.dashboard=null;state.adminEnteredFromLogin=false;$('appShell').classList.remove('visible');$('loginScreen').hidden=false;$('pinModal').classList.add('open');
-        }
-        toast(err.message,'error');
-      }
-      finally{$('submitPin').disabled=false;$('submitPin').textContent='Entrar';}
-    }
-    async function loadDashboard(shouldRender=true){
-      if(!state.sessionToken)throw new Error('Sessão administrativa encerrada.');
-      $('adminUpdated').textContent='Atualizando indicadores…';
-      try{
-        const data=await gasCall({action:'adminDashboard',sessionToken:state.sessionToken});state.dashboard=data;
-        if(shouldRender)renderDashboard(data);
-        return data;
-      }catch(err){if(shouldRender&&(err.message.includes('Sessão expirou')||err.message.includes('sessão administrativa'))){state.sessionToken=null;showScreen('collectionScreen');openAdminFlow();}throw err;}
-    }
-    function renderDashboard(data){
-      const s=data.summary;const fmt=n=>(Number(n)||0).toLocaleString('pt-BR');
-      $('adminSchoolCaption').textContent=data.schoolName;$('kpiToday').textContent=fmt(s.today.total);$('kpiTodaySplit').textContent=`Manhã ${fmt(s.today.manha)} · Tarde ${fmt(s.today.tarde)}`;
-      $('kpiYesterday').textContent=fmt(s.yesterday.total);$('kpiYesterdayDate').textContent=formatDatePt(data.yesterday);
-      $('kpiLastWeek').textContent=fmt(s.lastWeek.total);$('kpiLastWeekDate').textContent=formatDatePt(data.lastWeek);
-      const diff=s.today.total-s.yesterday.total;const pct=s.yesterday.total?Math.round(diff/s.yesterday.total*100):null;
-      $('kpiVariation').textContent=pct===null?(diff>=0?`+${fmt(diff)}`:fmt(diff)):`${pct>0?'+':''}${pct}%`;
-      $('kpiVariation').style.color=diff<0?'#b42318':'#087f5b';
-      [7,14,30].forEach(n=>{const p=data.periods[n];$(`period${n}`).textContent=fmt(p.geral);$(`period${n}Split`).textContent=`Manhã ${fmt(p['MANHÃ'])} · Tarde ${fmt(p['TARDE'])}`;});
-      $('adminUpdated').textContent=`Atualizado em ${new Date(data.generatedAt.replace(' ','T')).toLocaleString('pt-BR')} · ${data.recordCount} registros considerados`;
-      renderCharts(data);renderAnomalies(data);
-    }
-    function renderCharts(data){
-      if(typeof Chart==='undefined')return;
-      Object.values(state.charts).forEach(chart=>{if(chart)chart.destroy();});
-      const classes=data.classes;
-      state.charts.compare=new Chart($('compareChart'),{type:'bar',data:{labels:classes.map(c=>c.turma),datasets:[{label:'Hoje',data:classes.map(c=>c.today),backgroundColor:'#0f766e',borderRadius:5},{label:'Ontem',data:classes.map(c=>c.yesterday),backgroundColor:'#cbd5e1',borderRadius:5}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{boxWidth:10,font:{size:10}}}},scales:{x:{ticks:{font:{size:9},maxRotation:65,minRotation:35},grid:{display:false}},y:{beginAtZero:true,ticks:{precision:0,font:{size:10}},grid:{color:'#eef1f5'}}}}});
-      state.charts.trend=new Chart($('trendChart'),{type:'line',data:{labels:data.days.map(d=>d.label),datasets:[{label:'Geral',data:data.days.map(d=>d.total),borderColor:'#14213d',backgroundColor:'#14213d12',fill:true,tension:.3,borderWidth:2,pointRadius:1.5},{label:'Manhã',data:data.days.map(d=>d.manha),borderColor:'#0f766e',tension:.3,borderWidth:2,pointRadius:0},{label:'Tarde',data:data.days.map(d=>d.tarde),borderColor:'#d97706',tension:.3,borderWidth:2,pointRadius:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{boxWidth:10,font:{size:10}}}},scales:{x:{ticks:{maxTicksLimit:8,font:{size:9}},grid:{display:false}},y:{beginAtZero:true,ticks:{precision:0,font:{size:10}},grid:{color:'#eef1f5'}}}}});
-    }
-    function renderAnomalies(data){
-      const list=data.classes.filter(c=>c.anomaly).sort((a,b)=>b.dropPercent-a.dropPercent);
-      $('anomalyList').innerHTML=list.length?list.map(c=>`<div class="anomaly-item"><div><div class="anomaly-name">${escapeHtml(c.turma)} · ${escapeHtml(c.turno)}</div><div class="anomaly-detail">Hoje: ${c.today} · Média dos dias com registro: ${c.average7}</div></div><div class="anomaly-drop">−${c.dropPercent}%</div></div>`).join(''):'<div class="empty-note">Nenhuma queda brusca identificada entre as turmas com histórico suficiente.</div>';
-    }
+function saveBatch_(request) {
+  const date = validateDate_(request.date);
+  const turno = normalizeTurn_(request.turno);
+  const device = String(request.deviceId || '').slice(0, 80);
+  const entries = request.records;
+  if (!Array.isArray(entries) || entries.length < 1 || entries.length > 40) {
+    throw new Error('A lista de turmas está vazia ou excede o limite permitido.');
+  }
 
-    // Carrega jsPDF e AutoTable sob demanda, usando CDN primária e fallback automático.
-    // As dependências são verificadas no objeto global e na instância real do jsPDF.
-    let pdfLibrariesPromise_ = null;
+  const classes = readClasses_().filter(function(c) { return c.active; });
+  const byName = {};
+  classes.forEach(function(c) { byName[c.turma] = c; });
 
-    function hasJsPdf_(){
-      return typeof window.jspdf?.jsPDF === 'function';
-    }
+  const clean = [];
+  const seen = {};
+  entries.forEach(function(item) {
+    const name = String(item.turma || '').trim().toUpperCase();
+    const config = byName[name];
+    if (!config) throw new Error('Turma não cadastrada ou inativa: ' + name);
+    if (config.turno !== turno) throw new Error('A turma ' + name + ' não pertence ao turno ' + turno + '. Confira a aba Turmas.');
+    if (seen[name]) throw new Error('A turma ' + name + ' foi enviada mais de uma vez.');
+    seen[name] = true;
 
-    function hasAutoTable_(){
-      if(!hasJsPdf_())return false;
-      try{return typeof new window.jspdf.jsPDF().autoTable === 'function';}
-      catch(error){return false;}
+    const count = Number(item.presentes);
+    if (!Number.isInteger(count) || count < 0 || count > 1000) throw new Error('Quantidade inválida para ' + name + '.');
+    if (config.matriculados > 0 && count > config.matriculados) {
+      throw new Error('A quantidade de presentes em ' + name + ' supera o total de matriculados (' + config.matriculados + ').');
     }
+    clean.push({ turma: name, presentes: count, ordem: config.ordem });
+  });
 
-    function loadPdfScriptCandidates_(urls, isReady){
-      return (async()=>{
-        let lastError=null;
-        for(const src of urls){
-          if(isReady())return;
-          // Se a URL primária já foi declarada no HEAD, ela já teve sua oportunidade
-          // de carregar. Em caso de falha, segue diretamente para o CDN alternativo.
-          const alreadyDeclared=[...document.scripts].some(script=>script.src===src);
-          if(alreadyDeclared)continue;
-          try{
-            await new Promise((resolve,reject)=>{
-              const script=document.createElement('script');
-              let settled=false;
-              const finish=(error)=>{
-                if(settled)return;
-                settled=true;
-                clearTimeout(timer);
-                if(error){script.remove();reject(error);}else resolve();
-              };
-              const timer=setTimeout(()=>{
-                script.remove();
-                finish(new Error(`Tempo esgotado ao carregar ${src}`));
-              },18000);
-              script.src=src;
-              script.async=true;
-              script.crossOrigin='anonymous';
-              script.onload=()=>finish(isReady()?null:new Error(`Biblioteca não disponibilizada por ${src}`));
-              script.onerror=()=>finish(new Error(`Falha ao carregar ${src}`));
-              document.head.appendChild(script);
-            });
-          }catch(error){lastError=error;}
-        }
-        if(!isReady())throw lastError||new Error('Nenhum CDN disponibilizou a biblioteca solicitada.');
-      })();
-    }
-
-    async function ensurePdfLibraries_(){
-      if(hasJsPdf_()&&hasAutoTable_())return window.jspdf.jsPDF;
-      if(!pdfLibrariesPromise_){
-        pdfLibrariesPromise_=(async()=>{
-          await loadPdfScriptCandidates_([
-            'https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js',
-            'https://unpkg.com/jspdf@2.5.2/dist/jspdf.umd.min.js'
-          ],hasJsPdf_);
-          await loadPdfScriptCandidates_([
-            'https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.4/dist/jspdf.plugin.autotable.min.js',
-            'https://unpkg.com/jspdf-autotable@3.8.4/dist/jspdf.plugin.autotable.min.js'
-          ],hasAutoTable_);
-          if(!hasJsPdf_()||!hasAutoTable_())throw new Error('jsPDF ou AutoTable não ficou disponível após o carregamento.');
-          return window.jspdf.jsPDF;
-        })();
-      }
-      try{return await pdfLibrariesPromise_;}
-      finally{pdfLibrariesPromise_=null;}
-    }
-
-    async function exportPdf(){
-      const data=state.dashboard;if(!data){toast('Atualize os indicadores antes de gerar o relatório.','error');return;}
-      let jsPDF;
-      try{
-        jsPDF=await ensurePdfLibraries_();
-      }catch(error){
-        console.error('Falha ao carregar as bibliotecas de PDF:',error);
-        toast('Biblioteca PDF não carregada. Verifique a conexão e tente novamente.','error');
-        return;
-      }
-      const doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});
-      if(typeof doc.autoTable!=='function'){
-        console.error('A extensão jsPDF-AutoTable não foi registrada na instância do documento.');
-        toast('A biblioteca de tabelas PDF não ficou disponível. Atualize a página e tente novamente.','error');
-        return;
-      }
-      const navy=[20,33,61];const school=data.schoolName||'Unidade Escolar';const today=formatDatePt(data.today);
-      doc.setFillColor(...navy);doc.rect(0,0,297,26,'F');doc.setTextColor(255,255,255);doc.setFont('helvetica','bold');doc.setFontSize(17);doc.text('FLUXO ESCOLAR',14,12);doc.setFont('helvetica','normal');doc.setFontSize(9);doc.text('RELATÓRIO DE PRESENÇA E PREVISÃO DE MERENDA',14,19);
-      doc.setTextColor(25,35,50);doc.setFont('helvetica','bold');doc.setFontSize(13);doc.text(school,14,36);doc.setFont('helvetica','normal');doc.setFontSize(9);doc.text(`Data de referência: ${today}`,14,42);doc.text(`Gerado em: ${new Date().toLocaleString('pt-BR')}`,14,47);
-      const kpis=[['PRESENTES HOJE',data.summary.today.total],['MANHÃ',data.summary.today.manha],['TARDE',data.summary.today.tarde],['DIA ANTERIOR',data.summary.yesterday.total]];
-      let x=14;kpis.forEach((k,i)=>{doc.setDrawColor(220,226,234);doc.setFillColor(247,249,252);doc.roundedRect(x,54,63,22,2,2,'FD');doc.setFontSize(7);doc.setTextColor(100,112,128);doc.text(k[0],x+4,61);doc.setFont('helvetica','bold');doc.setFontSize(15);doc.setTextColor(...navy);doc.text(String(k[1]),x+4,71);doc.setFont('helvetica','normal');x+=67;});
-      const body=data.classes.map(c=>[c.turma,c.turno,String(c.matriculados||'—'),String(c.today),String(c.yesterday),String(c.sameWeekday),c.anomaly?'ATENÇÃO':'—']);
-      if(typeof doc.autoTable!=='function'){toast('Biblioteca de tabelas PDF não carregada.','error');return;}
-      doc.autoTable({startY:84,head:[['Turma','Turno','Matriculados','Hoje','Ontem','Mesmo dia da semana anterior','Alerta']],body,theme:'grid',styles:{font:'helvetica',fontSize:8,cellPadding:2.2,textColor:[40,50,65]},headStyles:{fillColor:navy,textColor:255,fontStyle:'bold'},alternateRowStyles:{fillColor:[247,249,252]},columnStyles:{0:{fontStyle:'bold'}}});
-      let y=doc.lastAutoTable.finalY+10;doc.setFont('helvetica','bold');doc.setFontSize(10);doc.setTextColor(...navy);doc.text('CONSOLIDADO POR PERÍODO',14,y);
-      const pbody=[7,14,30].map(n=>[`${n} dias`,String(data.periods[n].geral),String(data.periods[n]['MANHÃ']),String(data.periods[n]['TARDE'])]);
-      doc.autoTable({startY:y+3,head:[['Período','Total geral','Manhã','Tarde']],body:pbody,theme:'grid',styles:{fontSize:8,cellPadding:2.2},headStyles:{fillColor:navy,textColor:255},tableWidth:135,margin:{left:14}});
-      y=doc.lastAutoTable.finalY+17;
-      if(y>180){doc.addPage();y=25;}
-      doc.setDrawColor(120,130,145);doc.line(18,y+15,112,y+15);doc.line(185,y+15,279,y+15);doc.setFontSize(8);doc.setTextColor(65,75,90);doc.text('Assinatura da Direção',65,y+20,{align:'center'});doc.text('Responsável pela conferência',232,y+20,{align:'center'});
-      const pages=doc.internal.getNumberOfPages();for(let i=1;i<=pages;i++){doc.setPage(i);doc.setFontSize(7);doc.setTextColor(125,135,148);doc.text(`Fluxo Escolar · ${i}/${pages}`,283,203,{align:'right'});}
-      const filename=`relatorio-presenca-${data.today}.pdf`;doc.save(filename);toast('Relatório PDF gerado.','success');
-    }
-
-    async function saveSchoolName(){const schoolName=$('schoolNameInput').value.trim();try{const r=await gasCall({action:'adminUpdateSchool',sessionToken:state.sessionToken,schoolName});state.bootstrap.schoolName=r.schoolName;if(state.dashboard)state.dashboard.schoolName=r.schoolName;$('schoolCaption').textContent=r.schoolName;$('adminSchoolCaption').textContent=r.schoolName;$('summarySchool').textContent=r.schoolName;toast(r.message,'success');}catch(e){toast(e.message,'error');}}
-    async function saveNewPin(){const newPin=$('newPinInput').value.trim();try{const r=await gasCall({action:'adminChangePin',sessionToken:state.sessionToken,newPin});$('newPinInput').value='';toast(r.message,'success');}catch(e){toast(e.message,'error');}}
-    async function saveOperationalPin(){const newOperationalPin=$('newOperationalPinInput').value.trim();try{const r=await gasCall({action:'adminChangeOperationalPin',sessionToken:state.sessionToken,newOperationalPin});$('newOperationalPinInput').value='';localStorage.removeItem(CONFIG.OFFLINE_AUTH_KEY);state.operationalSessionToken=null;toast(r.message+' Cada responsável deverá autenticar-se novamente para registrar ou sincronizar contagens.','success');}catch(e){toast(e.message,'error');}}
-
-    async function initializeApp_(offlineLogin=false){
-      if(state.appInitialized)return;state.appInitialized=true;
-      $('todayLabel').textContent=formatDatePt(localDateISO());
-      const hour=new Date().getHours();state.turn=hour<12?'MANHÃ':'TARDE';
-      state.bootstrap={schoolName:CONFIG.DEFAULT_SCHOOL,turmas:fallbackClasses_()};
-      try{const cached=JSON.parse(localStorage.getItem(CONFIG.BOOTSTRAP_KEY)||'null');if(cached&&cached.turmas)state.bootstrap=cached;}catch(e){}
-      $('schoolCaption').textContent=state.bootstrap.schoolName||CONFIG.DEFAULT_SCHOOL;renderClasses();
-      if(CONFIG.API_URL&&navigator.onLine&&!offlineLogin){
-        try{const b=await gasCall({action:'bootstrap'});state.bootstrap=b;try{localStorage.setItem(CONFIG.BOOTSTRAP_KEY,JSON.stringify(b));}catch(e){}$('schoolCaption').textContent=b.schoolName;renderClasses();setSyncStatus('Conectado');}
-        catch(e){setSyncStatus('Modo local',true);if(!state.bootstrap?.turmas?.length)state.bootstrap={schoolName:CONFIG.DEFAULT_SCHOOL,turmas:fallbackClasses_()};renderClasses();if(!offlineLogin)toast('Sem conexão com o servidor. A contagem local continua disponível.','error');}
-      }else if(!navigator.onLine||offlineLogin){setSyncStatus('Modo offline',true);}else{setSyncStatus('Configuração pendente',true);}
-      if(navigator.onLine&&state.operationalSessionToken)flushQueue();
-      if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js').catch(()=>{});}
-    }
-    function startExperience_(){
-      $('footerYear').textContent=new Date().getFullYear();prepareInstallHelp_();
-      if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});
-      setTimeout(()=>{$('splashScreen').classList.add('fade-out');setTimeout(()=>{
-        $('splashScreen').hidden=true;$('loginScreen').hidden=false;
-        if(!state.isStandalone)setTimeout(showInstallModal_,180);
-      },420);},1550);
-    }
-    function switchOperator_(){
-      state.operatorName='';state.operationalSessionToken=null;state.sessionToken=null;state.dashboard=null;state.appInitialized=false;state.adminEnteredFromLogin=false;
-      $('appShell').classList.remove('visible');$('operatorNameInput').value='';$('operationalPinInput').value='';$('loginScreen').hidden=false;window.scrollTo(0,0);$('operatorNameInput').focus();
-    }
-
-    // Eventos
-    $('operationalLoginForm').addEventListener('submit',loginOperational);
-    $('openAdmin').addEventListener('click',openAdminFlow);
-    $('openAdminFromLogin').addEventListener('click',openAdminFlow);
-    $('openShareApp').addEventListener('click',openShareModal_);$('openShareFromLogin').addEventListener('click',openShareModal_);
-    $('switchOperator').addEventListener('click',switchOperator_);
-    $('copyInstallLink').addEventListener('click',()=>copyText_(appShareUrl_()).then(()=>toast('Link copiado. Abra-o no Safari do iPhone para instalar.','success')).catch(e=>toast(e.message,'error')));
-    $('installAppButton').addEventListener('click',showInstallModal_);
-    $('reopenInstallButton').addEventListener('click',showInstallModal_);
-    $('installModalAction').addEventListener('click',triggerInstall_);
-    $('closeInstallModal').addEventListener('click',()=>$('installModal').classList.remove('open'));
-    $('installModal').addEventListener('click',e=>{if(e.target===$('installModal'))$('installModal').classList.remove('open');});
-    $('copyShareLink').addEventListener('click',()=>copyText_($('shareAppLink').value).then(()=>toast('Link copiado.','success')).catch(e=>toast(e.message,'error')));
-    $('nativeShareApp').addEventListener('click',shareAppNative_);
-    $('closeShareModal').addEventListener('click',()=>$('shareModal').classList.remove('open'));
-    $('shareModal').addEventListener('click',e=>{if(e.target===$('shareModal'))$('shareModal').classList.remove('open');});
-    $('cancelPin').addEventListener('click',()=>$('pinModal').classList.remove('open'));
-    $('pinForm').addEventListener('submit',loginAdmin);
-    $('classGrid').addEventListener('click',e=>{
-      const btn=e.target.closest('button[data-action]');if(!btn)return;
-      const input=document.querySelector(`.count-input[data-class="${CSS.escape(btn.dataset.class)}"]`);if(!input)return;
-      const max=input.max?Number(input.max):Infinity;const current=Math.max(0,parseInt(input.value,10)||0);
-      input.value=btn.dataset.action==='inc'?Math.min(max,current+1):Math.max(0,current-1);persistCounts(btn.dataset.class);
+  clean.sort(function(a, b) { return a.ordem - b.ordem; });
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(PF.SHEETS.REGISTROS);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const lastRow = sheet.getLastRow();
+    const width = PF.HEADERS.Registros.length;
+    const existingKeys = lastRow > 1 ? sheet.getRange(2, 1, lastRow - 1, 3).getValues() : [];
+    const rowByKey = {};
+    existingKeys.forEach(function(row, index) {
+      const key = normalizeCellDate_(row[0]) + '|' + String(row[2]).toUpperCase();
+      rowByKey[key] = index + 2;
     });
-    $('classGrid').addEventListener('input',e=>{if(e.target.matches('.count-input')){const input=e.target;let value=Math.max(0,parseInt(input.value,10)||0);if(input.max)value=Math.min(value,Number(input.max));input.value=value;persistCounts(input.dataset.class);}});
-    document.querySelectorAll('.turn-btn').forEach(btn=>btn.addEventListener('click',()=>changeTurn(btn.dataset.turn)));
-    $('saveCounts').addEventListener('click',()=>submitCounts(true).catch(()=>{}));
-    $('showSummary').addEventListener('click',openSummary);$('backFromSummary').addEventListener('click',()=>showScreen('collectionScreen'));
-    $('shareSummary').addEventListener('click',shareCurrentSummary_);$('printSummary').addEventListener('click',printSummary);
-    $('adminLogout').addEventListener('click',()=>{
-      state.sessionToken=null;state.dashboard=null;
-      if(state.adminEnteredFromLogin){
-        state.adminEnteredFromLogin=false;state.appInitialized=false;state.operatorName='';state.operationalSessionToken=null;
-        $('appShell').classList.remove('visible');$('loginScreen').hidden=false;$('operatorNameInput').value='';$('operationalPinInput').value='';window.scrollTo({top:0,behavior:'smooth'});
-      }else{showScreen('collectionScreen');}
-      toast('Sessão administrativa encerrada.');
-    });
-    $('refreshDashboard').addEventListener('click',()=>loadDashboard().then(()=>toast('Indicadores atualizados.','success')).catch(e=>toast(e.message,'error')));
-    $('downloadPdf').addEventListener('click',exportPdf);
-    $('openSettings').addEventListener('click',()=>{$('schoolNameInput').value=state.dashboard?.schoolName||state.bootstrap?.schoolName||'';$('settingsModal').classList.add('open');});
-    $('closeSettings').addEventListener('click',()=>$('settingsModal').classList.remove('open'));
-    $('saveSchoolName').addEventListener('click',saveSchoolName);$('saveNewPin').addEventListener('click',saveNewPin);$('saveOperationalPin').addEventListener('click',saveOperationalPin);
-    $('settingsModal').addEventListener('click',e=>{if(e.target===$('settingsModal'))$('settingsModal').classList.remove('open');});
-    $('pinModal').addEventListener('click',e=>{if(e.target===$('pinModal'))$('pinModal').classList.remove('open');});
-    window.addEventListener('online',()=>{if(state.operationalSessionToken){setSyncStatus('Conectado');flushQueue();}else if(getPending().length){setSyncStatus('Autenticação necessária',true);toast('Entre novamente com o PIN operacional para sincronizar as contagens pendentes.','success');}else{setSyncStatus('Conectado');}});window.addEventListener('offline',()=>setSyncStatus('Sem conexão',true));
-    window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();state.installPrompt=e;$('installAppButton').classList.remove('install-hidden');updateInstallModalContent_();});
-    window.addEventListener('appinstalled',()=>{state.isStandalone=true;$('installAppButton').classList.add('install-hidden');$('reopenInstallButton').classList.add('install-hidden');$('installModal').classList.remove('open');toast('Fluxo Escolar instalado com sucesso.','success');});
 
-    startExperience_();
-  </script>
-  <style media="print">
-    @page{size:A4;margin:12mm}body{background:#fff!important}.app-header,.app-footer,.auth-screen,.splash-screen,.summary-actions,.summary-top button,.toast,.modal-backdrop,.install-fab{display:none!important}.app-shell{display:block!important}.main{display:block!important;max-width:none!important;margin:0!important;padding:0!important}#collectionScreen,#adminScreen{display:none!important}.summary-screen{display:block!important;min-height:0!important;background:#fff!important;color:#111!important;padding:0!important}.summary-inner{max-width:none}.summary-title,.summary-caption,.summary-sub,.summary-kicker,.summary-shift span,.summary-row span,.summary-date{color:#111!important}.summary-hero,.summary-shift,.summary-row{background:#fff!important;border:1px solid #bbb!important;color:#111!important}.summary-number,.summary-shift strong,.summary-row strong{color:#111!important}.summary-list{grid-template-columns:repeat(4,1fr)!important}
-  </style>
-</body>
-</html>
+    const now = Utilities.formatDate(new Date(), PF.TIMEZONE, "yyyy-MM-dd'T'HH:mm:ss");
+    const updatesByRow = {};
+    const additions = [];
+    clean.forEach(function(item) {
+      const key = date + '|' + item.turma;
+      const row = [date, turno, item.turma, item.presentes, now, String(request.requestId), device];
+      if (Object.prototype.hasOwnProperty.call(rowByKey, key)) {
+        updatesByRow[rowByKey[key]] = row;
+      } else {
+        additions.push(row);
+      }
+    });
+
+    writeGroupedRows_(sheet, updatesByRow, width);
+    if (additions.length) sheet.getRange(sheet.getLastRow() + 1, 1, additions.length, width).setValues(additions);
+
+    const total = clean.reduce(function(sum, item) { return sum + item.presentes; }, 0);
+    appendAudit_('SALVAR_CONTAGEM', date, turno, request.requestId, clean.length + ' turmas; total de ' + total + ' presentes.');
+    return {
+      ok: true,
+      message: 'Contagem registrada com sucesso.',
+      date: date,
+      turno: turno,
+      total: total,
+      classesSaved: clean.length,
+      savedAt: now
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function adminLogin_(request) {
+  const pin = String(request.pin || '');
+  const device = String(request.deviceId || 'unknown').slice(0, 80);
+  if (!/^\d{4}$/.test(pin)) throw new Error('Digite um PIN de 4 números.');
+
+  const cache = CacheService.getScriptCache();
+  const attemptKey = 'pf_pin_attempt_' + digest_(device).slice(0, 24);
+  const attempts = Number(cache.get(attemptKey) || 0);
+  if (attempts >= 5) throw new Error('Muitas tentativas. Aguarde 15 minutos e tente novamente.');
+
+  const props = PropertiesService.getScriptProperties();
+  const salt = props.getProperty('PF_ADMIN_PIN_SALT');
+  const hash = props.getProperty('PF_ADMIN_PIN_HASH');
+  if (!salt || !hash) throw new Error('PIN administrativo não inicializado. Execute setupSistema() no Apps Script.');
+
+  if (digest_(salt + '|' + pin) !== hash) {
+    cache.put(attemptKey, String(attempts + 1), 900);
+    throw new Error('PIN incorreto.');
+  }
+  cache.remove(attemptKey);
+
+  const token = Utilities.getUuid() + '-' + Utilities.getUuid();
+  cache.put('pf_admin_session_' + digest_(token), '1', PF.SESSION_SECONDS);
+  const config = readConfig_();
+  return {
+    ok: true,
+    sessionToken: token,
+    expiresIn: PF.SESSION_SECONDS,
+    mustChangePin: props.getProperty('PF_PIN_MUST_CHANGE') === 'true',
+    schoolName: config.SCHOOL_NAME || 'Unidade Escolar'
+  };
+}
+
+function requireAdmin_(token) {
+  const value = String(token || '');
+  if (value.length < 40 || value.length > 100) throw new Error('Sessão administrativa inválida. Entre novamente.');
+  const active = CacheService.getScriptCache().get('pf_admin_session_' + digest_(value));
+  if (active !== '1') throw new Error('Sua sessão expirou. Entre novamente com o PIN.');
+}
+
+function changeAdminPin_(request) {
+  const nextPin = String(request.newPin || '');
+  if (!/^\d{4}$/.test(nextPin)) throw new Error('O novo PIN deve conter exatamente 4 números.');
+  const salt = Utilities.getUuid() + Utilities.getUuid();
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty('PF_ADMIN_PIN_SALT', salt);
+  props.setProperty('PF_ADMIN_PIN_HASH', digest_(salt + '|' + nextPin));
+  props.setProperty('PF_PIN_MUST_CHANGE', 'false');
+  appendAudit_('ALTERAR_PIN', '', '', request.requestId, 'PIN administrativo atualizado.');
+  return { ok: true, message: 'PIN administrativo atualizado.' };
+}
+
+function updateSchoolName_(request) {
+  const name = String(request.schoolName || '').trim().replace(/[<>]/g, '').slice(0, 120);
+  if (name.length < 3) throw new Error('Informe um nome de unidade com pelo menos 3 caracteres.');
+  writeConfig_('SCHOOL_NAME', name);
+  appendAudit_('ALTERAR_UNIDADE', '', '', request.requestId, 'Nome da unidade atualizado.');
+  return { ok: true, schoolName: name, message: 'Nome da unidade atualizado.' };
+}
+
+function getDashboard_() {
+  const today = Utilities.formatDate(new Date(), PF.TIMEZONE, 'yyyy-MM-dd');
+  const todayDate = parseIsoDate_(today);
+  const anomalyThreshold = Number(readConfig_().ANOMALY_THRESHOLD || 0.70);
+  const yesterday = shiftDate_(todayDate, -1);
+  const lastWeek = shiftDate_(todayDate, -7);
+  const rangeStart = shiftDate_(todayDate, -(PF.MAX_DASHBOARD_DAYS - 1));
+  const startIso = formatIsoDate_(rangeStart);
+  const endIso = today;
+
+  const records = readRecords_(startIso, endIso);
+  const classes = readClasses_().filter(function(c) { return c.active; });
+  const daily = {};
+  const perClass = {};
+  records.forEach(function(r) {
+    if (!daily[r.date]) daily[r.date] = { total: 0, 'MANHÃ': 0, 'TARDE': 0 };
+    daily[r.date].total += r.presentes;
+    daily[r.date][r.turno] += r.presentes;
+    if (!perClass[r.turma]) perClass[r.turma] = {};
+    perClass[r.turma][r.date] = r.presentes;
+  });
+
+  function dateTotal(date, turn) {
+    const d = daily[formatIsoDate_(date)];
+    return d ? (turn ? (d[turn] || 0) : d.total) : 0;
+  }
+  function classValue(className, date) {
+    return perClass[className] && perClass[className][formatIsoDate_(date)] !== undefined
+      ? perClass[className][formatIsoDate_(date)] : 0;
+  }
+
+  const days = [];
+  for (let i = 29; i >= 0; i--) {
+    const d = shiftDate_(todayDate, -i);
+    const iso = formatIsoDate_(d);
+    const values = daily[iso] || { total: 0, 'MANHÃ': 0, 'TARDE': 0 };
+    days.push({ date: iso, label: Utilities.formatDate(d, PF.TIMEZONE, 'dd/MM'), total: values.total, manha: values['MANHÃ'], tarde: values['TARDE'] });
+  }
+
+  const periodStats = {};
+  [7, 14, 30].forEach(function(period) {
+    const start = shiftDate_(todayDate, -(period - 1));
+    const totals = { geral: 0, 'MANHÃ': 0, 'TARDE': 0 };
+    records.forEach(function(r) {
+      const d = parseIsoDate_(r.date);
+      if (d >= start && d <= todayDate) {
+        totals.geral += r.presentes;
+        totals[r.turno] += r.presentes;
+      }
+    });
+    periodStats[period] = totals;
+  });
+
+  const todayClasses = classes.map(function(c) {
+    const current = classValue(c.turma, todayDate);
+    const prev = classValue(c.turma, yesterday);
+    const sameWeekday = classValue(c.turma, lastWeek);
+    let baselineSum = 0;
+    let baselineCount = 0;
+    for (let i = 1; i <= 7; i++) {
+      const d = shiftDate_(todayDate, -i);
+      const iso = formatIsoDate_(d);
+      if (perClass[c.turma] && perClass[c.turma][iso] !== undefined) {
+        baselineSum += perClass[c.turma][iso];
+        baselineCount++;
+      }
+    }
+    const average = baselineCount ? baselineSum / baselineCount : 0;
+    const anomaly = baselineCount >= 3 && average >= 5 && current <= average * anomalyThreshold;
+    return {
+      turma: c.turma,
+      turno: c.turno,
+      matriculados: c.matriculados,
+      today: current,
+      yesterday: prev,
+      sameWeekday: sameWeekday,
+      average7: Math.round(average * 10) / 10,
+      dropPercent: average > 0 ? Math.round((1 - current / average) * 100) : 0,
+      anomaly: anomaly,
+      anomalyThreshold: anomalyThreshold
+    };
+  });
+
+  const todaySummary = daily[today] || { total: 0, 'MANHÃ': 0, 'TARDE': 0 };
+  const yesterdaySummary = daily[formatIsoDate_(yesterday)] || { total: 0, 'MANHÃ': 0, 'TARDE': 0 };
+  const lastWeekSummary = daily[formatIsoDate_(lastWeek)] || { total: 0, 'MANHÃ': 0, 'TARDE': 0 };
+
+  return {
+    ok: true,
+    generatedAt: Utilities.formatDate(new Date(), PF.TIMEZONE, "yyyy-MM-dd'T'HH:mm:ss"),
+    today: today,
+    yesterday: formatIsoDate_(yesterday),
+    lastWeek: formatIsoDate_(lastWeek),
+    schoolName: readConfig_().SCHOOL_NAME || 'Unidade Escolar',
+    summary: {
+      today: { total: todaySummary.total, manha: todaySummary['MANHÃ'], tarde: todaySummary['TARDE'] },
+      yesterday: { total: yesterdaySummary.total, manha: yesterdaySummary['MANHÃ'], tarde: yesterdaySummary['TARDE'] },
+      lastWeek: { total: lastWeekSummary.total, manha: lastWeekSummary['MANHÃ'], tarde: lastWeekSummary['TARDE'] }
+    },
+    periods: periodStats,
+    days: days,
+    classes: todayClasses,
+    recordCount: records.length
+  };
+}
+
+function writeGroupedRows_(sheet, rowsByNumber, width) {
+  const rowNumbers = Object.keys(rowsByNumber).map(Number).sort(function(a, b) { return a - b; });
+  if (!rowNumbers.length) return;
+  let groupStart = rowNumbers[0];
+  let previous = rowNumbers[0];
+  let group = [rowsByNumber[groupStart]];
+  for (let i = 1; i < rowNumbers.length; i++) {
+    const current = rowNumbers[i];
+    if (current === previous + 1) {
+      group.push(rowsByNumber[current]);
+    } else {
+      sheet.getRange(groupStart, 1, group.length, width).setValues(group);
+      groupStart = current;
+      group = [rowsByNumber[current]];
+    }
+    previous = current;
+  }
+  sheet.getRange(groupStart, 1, group.length, width).setValues(group);
+}
+
+function readRecords_(startIso, endIso) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PF.SHEETS.REGISTROS);
+  const last = sheet.getLastRow();
+  if (last < 2) return [];
+  return sheet.getRange(2, 1, last - 1, PF.HEADERS.Registros.length).getValues().reduce(function(out, row) {
+    const date = normalizeCellDate_(row[0]);
+    const turn = normalizeTurn_(row[1]);
+    const turma = String(row[2] || '').trim().toUpperCase();
+    const count = Number(row[3]);
+    if (date >= startIso && date <= endIso && turma && Number.isFinite(count)) {
+      out.push({ date: date, turno: turn, turma: turma, presentes: count });
+    }
+    return out;
+  }, []);
+}
+
+function readClasses_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PF.SHEETS.TURMAS);
+  const last = sheet.getLastRow();
+  if (last < 2) return [];
+  return sheet.getRange(2, 1, last - 1, PF.HEADERS.Turmas.length).getValues().map(function(row) {
+    return {
+      turno: normalizeTurn_(row[0]),
+      turma: String(row[1] || '').trim().toUpperCase(),
+      active: row[2] === true || String(row[2]).toUpperCase() === 'TRUE' || String(row[2]).toUpperCase() === 'SIM',
+      ordem: Number(row[3]) || 999,
+      matriculados: Math.max(0, Number(row[4]) || 0)
+    };
+  }).filter(function(c) { return c.turma; }).sort(function(a, b) { return a.ordem - b.ordem; });
+}
+
+function seedClasses_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PF.SHEETS.TURMAS);
+  if (sheet.getLastRow() > 1) return;
+  const rows = [];
+  let order = 1;
+  // Distribuição inicial provisória: anos finais 6º-8º à tarde; 9º e Ensino Médio pela manhã.
+  // Ajuste a coluna Turno diretamente nesta aba conforme o horário real da unidade.
+  ['6º ANO', '7º ANO', '8º ANO'].forEach(function(grade) {
+    ['A', 'B', 'C', 'D'].forEach(function(letter) { rows.push(['TARDE', grade + ' ' + letter, true, order++, 0]); });
+  });
+  ['9º ANO', '1º ANO', '2º ANO', '3º ANO'].forEach(function(grade) {
+    ['A', 'B', 'C', 'D'].forEach(function(letter) { rows.push(['MANHÃ', grade + ' ' + letter, true, order++, 0]); });
+  });
+  sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
+}
+
+function seedConfig_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PF.SHEETS.CONFIG);
+  const existing = {};
+  if (sheet.getLastRow() > 1) {
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getValues().forEach(function(r) { existing[String(r[0])] = true; });
+  }
+  const defaults = [
+    ['SCHOOL_NAME', 'Unidade Escolar'],
+    ['ANOMALY_THRESHOLD', '0.70'],
+    ['TIMEZONE', PF.TIMEZONE],
+    ['APP_VERSION', '1.0.0']
+  ];
+  const missing = defaults.filter(function(r) { return !existing[r[0]]; });
+  if (missing.length) sheet.getRange(sheet.getLastRow() + 1, 1, missing.length, 2).setValues(missing);
+}
+
+function initializePin_() {
+  const props = PropertiesService.getScriptProperties();
+  if (!props.getProperty('PF_ADMIN_PIN_HASH')) {
+    const salt = Utilities.getUuid() + Utilities.getUuid();
+    props.setProperty('PF_ADMIN_PIN_SALT', salt);
+    props.setProperty('PF_ADMIN_PIN_HASH', digest_(salt + '|' + PF.DEFAULT_ADMIN_PIN));
+    props.setProperty('PF_PIN_MUST_CHANGE', 'true');
+  }
+}
+
+function readConfig_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PF.SHEETS.CONFIG);
+  const last = sheet.getLastRow();
+  const config = {};
+  if (last > 1) sheet.getRange(2, 1, last - 1, 2).getValues().forEach(function(row) { config[String(row[0])] = String(row[1]); });
+  return config;
+}
+
+function writeConfig_(key, value) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PF.SHEETS.CONFIG);
+  const last = sheet.getLastRow();
+  if (last > 1) {
+    const values = sheet.getRange(2, 1, last - 1, 2).getValues();
+    for (let i = 0; i < values.length; i++) {
+      if (String(values[i][0]) === key) {
+        sheet.getRange(i + 2, 2).setValue(value);
+        return;
+      }
+    }
+  }
+  sheet.appendRow([key, value]);
+}
+
+function appendAudit_(action, date, turn, requestId, details) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PF.SHEETS.AUDITORIA);
+  sheet.appendRow([
+    Utilities.formatDate(new Date(), PF.TIMEZONE, "yyyy-MM-dd'T'HH:mm:ss"),
+    action,
+    date || '',
+    turn || '',
+    String(requestId || ''),
+    String(details || '').slice(0, 500)
+  ]);
+}
+
+function formatSheets_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  Object.keys(PF.HEADERS).forEach(function(name) {
+    const sheet = ss.getSheetByName(name);
+    sheet.setFrozenRows(1);
+    sheet.getRange(1, 1, 1, PF.HEADERS[name].length)
+      .setFontWeight('bold').setBackground('#14213d').setFontColor('#ffffff');
+    sheet.autoResizeColumns(1, PF.HEADERS[name].length);
+    if (!sheet.getFilter() && sheet.getLastRow() > 1) sheet.getRange(1, 1, sheet.getLastRow(), PF.HEADERS[name].length).createFilter();
+  });
+  const classes = ss.getSheetByName(PF.SHEETS.TURMAS);
+  if (classes.getLastRow() > 1) {
+    const rowCount = classes.getLastRow() - 1;
+    const activeRange = classes.getRange(2, 3, rowCount, 1);
+    activeRange.setDataValidation(SpreadsheetApp.newDataValidation().requireCheckbox().build());
+    classes.getRange(2, 1, rowCount, 1).setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(['MANHÃ', 'TARDE'], true).build());
+    classes.getRange(2, 4, rowCount, 2).setNumberFormat('0');
+  }
+}
+
+function getOrCreateSheet_(ss, name) {
+  return ss.getSheetByName(name) || ss.insertSheet(name);
+}
+
+function ensureHeaders_(sheet, headers) {
+  const current = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
+  const matches = headers.every(function(value, index) { return String(current[index] || '') === value; });
+  if (!matches) {
+    if (sheet.getLastRow() === 0) sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    else if (sheet.getLastRow() === 1 && current.join('') === '') sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    else throw new Error('A estrutura da aba ' + sheet.getName() + ' não corresponde aos cabeçalhos esperados. Não alterei seus dados.');
+  }
+}
+
+function validateDate_(value) {
+  const date = String(value || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Data de referência inválida.');
+  const parsed = parseIsoDate_(date);
+  if (formatIsoDate_(parsed) !== date) throw new Error('Data inexistente.');
+  const today = parseIsoDate_(Utilities.formatDate(new Date(), PF.TIMEZONE, 'yyyy-MM-dd'));
+  const futureLimit = shiftDate_(today, 1);
+  const oldest = shiftDate_(today, -365);
+  if (parsed > futureLimit || parsed < oldest) throw new Error('A data informada está fora do intervalo permitido.');
+  return date;
+}
+
+function normalizeTurn_(value) {
+  const turn = String(value || '').trim().toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (turn === 'MANHA') return 'MANHÃ';
+  if (turn === 'TARDE') return 'TARDE';
+  throw new Error('Turno inválido.');
+}
+
+function normalizeCellDate_(value) {
+  if (value instanceof Date) return Utilities.formatDate(value, PF.TIMEZONE, 'yyyy-MM-dd');
+  return String(value || '').trim().slice(0, 10);
+}
+
+function parseIsoDate_(iso) {
+  const p = String(iso).split('-').map(Number);
+  return new Date(p[0], p[1] - 1, p[2], 12, 0, 0, 0);
+}
+
+function formatIsoDate_(date) {
+  return Utilities.formatDate(date, PF.TIMEZONE, 'yyyy-MM-dd');
+}
+
+function shiftDate_(date, days) {
+  const copy = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12, 0, 0, 0);
+  copy.setDate(copy.getDate() + days);
+  return copy;
+}
+
+function digest_(value) {
+  const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(value), Utilities.Charset.UTF_8);
+  return Utilities.base64EncodeWebSafe(bytes).replace(/=+$/g, '');
+}
+
+function safeStringify_(value) {
+  return JSON.stringify(value).replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
+}
+
+function jsonp_(value, callback) {
+  const safeCallback = callback === '__prismaFluxoReceive' ? callback : '__prismaFluxoReceive';
+  return ContentService.createTextOutput(safeCallback + '(' + safeStringify_(value) + ');')
+    .setMimeType(ContentService.MimeType.JAVASCRIPT);
+}
+
+function publicError_(err) {
+  const message = err && err.message ? String(err.message) : 'Erro interno no servidor.';
+  return message.slice(0, 300);
+}
+
+/** Diagnóstico opcional pelo editor Apps Script. */
+function testarConexao() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const required = Object.keys(PF.SHEETS).map(function(k) { return PF.SHEETS[k]; });
+  const missing = required.filter(function(name) { return !ss.getSheetByName(name); });
+  if (missing.length) throw new Error('Abas ausentes: ' + missing.join(', '));
+  return 'OK — ' + ss.getName() + ' — ' + readClasses_().length + ' turmas cadastradas.';
+}
