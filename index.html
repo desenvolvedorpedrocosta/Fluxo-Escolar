@@ -47,6 +47,16 @@
     .install-modal-steps p{margin:0;color:#526071}
     @media(max-width:640px){.auth-card{padding:22px 19px}.header-tools{gap:5px}.header-tool{width:37px;height:37px;min-height:37px;padding:7px;font-size:0}.header-tool svg{width:17px;height:17px}.app-footer{padding:4px 12px 8px}.install-fab{right:12px;bottom:12px}}
   </style>
+  <style>
+    .notification-tools{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:0 0 15px;padding:10px 12px;border:1px solid #e1e8ef;border-radius:13px;background:#fff}
+    .notification-info{display:flex;align-items:center;gap:8px;color:#64748b;font-size:11px;line-height:1.4;font-weight:650;min-width:0}
+    .notification-info-dot{width:7px;height:7px;flex:0 0 7px;border-radius:50%;background:#0f766e}
+    .notification-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+    .notification-preference-btn{min-height:32px;padding:6px 9px;border:1px solid #dce4ee;border-radius:9px;background:#f8fafc;color:#34445b;font-size:10px;font-weight:800}
+    .notification-preference-btn.active{background:#e8f5ef;border-color:#c8e5d7;color:#087f5b}
+    .notification-preference-btn:disabled{opacity:.6;cursor:default}
+    @media(max-width:640px){.notification-tools{align-items:flex-start}.notification-info{width:100%}.notification-actions{width:100%}.notification-preference-btn{flex:1}}
+  </style>
 </head>
 <body>
   <div class="splash-screen" id="splashScreen" aria-label="Iniciando Fluxo Escolar">
@@ -125,6 +135,13 @@
   </header>
 
   <main class="main">
+    <div class="notification-tools" id="notificationTools" aria-label="Preferências de avisos">
+      <div class="notification-info"><span class="notification-info-dot" aria-hidden="true"></span><span>Novos envios entre dispositivos dependem de conexão com a internet.</span></div>
+      <div class="notification-actions">
+        <button type="button" class="notification-preference-btn" id="toggleNotificationSound" aria-pressed="false">Som: mudo</button>
+        <button type="button" class="notification-preference-btn" id="enableBrowserNotifications">Ativar notificações</button>
+      </div>
+    </div>
     <section class="screen active" id="collectionScreen">
       <div class="top-line">
         <div>
@@ -340,7 +357,9 @@
       BOOTSTRAP_KEY: 'fluxo_escolar_bootstrap_v1',
       OFFLINE_AUTH_KEY: 'fluxo_escolar_offline_auth_v1',
       REMEMBERED_LOGIN_KEY: 'fluxo_escolar_remembered_login_v1',
-      CHECKED_KEY_PREFIX: 'fluxo_escolar_checked_v1'
+      CHECKED_KEY_PREFIX: 'fluxo_escolar_checked_v1',
+      NOTIFICATION_SOUND_KEY: 'fluxo_escolar_notification_sound_v1',
+      NOTIFIED_SUBMISSIONS_KEY: 'fluxo_escolar_notified_submissions_v1'
     };
 
     const state = {
@@ -362,7 +381,13 @@
       turnRecordInfo: null,
       turnSubmitted: false,
       editingTurn: false,
-      turnLoading: false
+      turnLoading: false,
+      notificationCursor: null,
+      notificationTimer: null,
+      notificationPollBusy: false,
+      notificationMonitorStarting: false,
+      notificationSoundEnabled: false,
+      audioContext: null
     };
 
     const $ = (id) => document.getElementById(id);
@@ -386,6 +411,133 @@
     function toast(message,type=''){
       const el=$('toast');el.textContent=message;el.className=`toast show ${type}`;
       clearTimeout(toast._timer);toast._timer=setTimeout(()=>el.className='toast',3300);
+    }
+    function refreshNotificationControls_(){
+      const sound=$('toggleNotificationSound');
+      if(sound){sound.textContent=state.notificationSoundEnabled?'Som: ativado':'Som: mudo';sound.classList.toggle('active',state.notificationSoundEnabled);sound.setAttribute('aria-pressed',state.notificationSoundEnabled?'true':'false');}
+      const browser=$('enableBrowserNotifications');
+      if(browser){
+        if(!('Notification' in window)){browser.textContent='Notificações indisponíveis';browser.disabled=true;}
+        else if(Notification.permission==='granted'){browser.textContent='Notificações ativadas';browser.classList.add('active');browser.disabled=true;}
+        else if(Notification.permission==='denied'){browser.textContent='Avisos bloqueados no navegador';browser.classList.remove('active');browser.disabled=true;}
+        else{browser.textContent='Ativar notificações';browser.classList.remove('active');browser.disabled=false;}
+      }
+    }
+    function initializeNotificationPreferences_(){
+      try{state.notificationSoundEnabled=localStorage.getItem(CONFIG.NOTIFICATION_SOUND_KEY)==='1';}catch(e){state.notificationSoundEnabled=false;}
+      refreshNotificationControls_();
+    }
+    async function toggleNotificationSound_(){
+      state.notificationSoundEnabled=!state.notificationSoundEnabled;
+      try{localStorage.setItem(CONFIG.NOTIFICATION_SOUND_KEY,state.notificationSoundEnabled?'1':'0');}catch(e){}
+      if(state.notificationSoundEnabled){
+        const AudioCtx=window.AudioContext||window.webkitAudioContext;
+        if(AudioCtx){try{if(!state.audioContext)state.audioContext=new AudioCtx();if(state.audioContext.state==='suspended')await state.audioContext.resume();}catch(e){}}
+        toast('Aviso sonoro ativado. Você pode silenciá-lo neste botão.','success');
+      }else{toast('Aviso sonoro desativado.','success');}
+      refreshNotificationControls_();
+    }
+    async function requestBrowserNotifications_(){
+      if(!('Notification' in window)){toast('Este navegador não oferece notificações nativas. Os avisos dentro do aplicativo continuarão funcionando.','error');return;}
+      if(Notification.permission==='granted'){toast('As notificações do navegador já estão ativadas.','success');refreshNotificationControls_();return;}
+      if(Notification.permission==='denied'){toast('As notificações estão bloqueadas nas permissões do navegador. Altere essa permissão nas configurações do site.','error');refreshNotificationControls_();return;}
+      toast('O navegador solicitará permissão para avisar quando uma nova contagem for enviada.');
+      try{const permission=await Notification.requestPermission();refreshNotificationControls_();toast(permission==='granted'?'Notificações ativadas neste dispositivo.':permission==='denied'?'Permissão de notificações não concedida.':'Permissão ainda não concedida.','success');}
+      catch(error){toast('Não foi possível solicitar a permissão neste navegador.','error');}
+    }
+    function playSubmissionTone_(){
+      if(!state.notificationSoundEnabled)return;
+      const AudioCtx=window.AudioContext||window.webkitAudioContext;
+      if(!AudioCtx)return;
+      try{
+        if(!state.audioContext)state.audioContext=new AudioCtx();
+        const ctx=state.audioContext;
+        if(ctx.state==='suspended')ctx.resume().catch(()=>{});
+        const oscillator=ctx.createOscillator();
+        const gain=ctx.createGain();
+        const now=ctx.currentTime;
+        oscillator.type='sine';oscillator.frequency.setValueAtTime(740,now);
+        gain.gain.setValueAtTime(0.0001,now);
+        gain.gain.exponentialRampToValueAtTime(0.035,now+0.018);
+        gain.gain.exponentialRampToValueAtTime(0.0001,now+0.16);
+        oscillator.connect(gain);gain.connect(ctx.destination);
+        oscillator.start(now);oscillator.stop(now+0.17);
+      }catch(error){}
+    }
+    function notifiedSubmissionIds_(){
+      try{const ids=JSON.parse(localStorage.getItem(CONFIG.NOTIFIED_SUBMISSIONS_KEY)||'[]');return Array.isArray(ids)?ids:[];}catch(e){return [];}
+    }
+    function markSubmissionNotified_(id){
+      if(!id)return;
+      const ids=notifiedSubmissionIds_().filter(value=>value!==id);
+      ids.push(id);
+      try{localStorage.setItem(CONFIG.NOTIFIED_SUBMISSIONS_KEY,JSON.stringify(ids.slice(-150)));}catch(e){}
+    }
+    function notifyNativeSubmission_(event){
+      if(!('Notification' in window)||Notification.permission!=='granted')return;
+      const turn=String(event.turno||'').toUpperCase()==='MANHÃ'?'Manhã':'Tarde';
+      const responsible=event.responsavel||'Responsável não identificado';
+      const date=event.date&&event.date!==localDateISO()?` · ${event.date.split('-').reverse().join('/')}`:'';
+      const options={body:`${responsible} · ${turn}${date}`,tag:`fluxo-escolar-${event.requestId||event.id}`,renotify:false,icon:new URL('icons/icon-192.png',window.location.href).href};
+      try{
+        if('serviceWorker' in navigator){navigator.serviceWorker.getRegistration().then(reg=>{if(reg&&reg.showNotification)return reg.showNotification(`Contagem enviada · ${turn}`,options);new Notification(`Contagem enviada · ${turn}`,options);}).catch(()=>{try{new Notification(`Contagem enviada · ${turn}`,options);}catch(e){}});}
+        else new Notification(`Contagem enviada · ${turn}`,options);
+      }catch(error){}
+    }
+    function processSubmissionNotifications_(events,mode='remote'){
+      const fresh=[];
+      (events||[]).forEach(event=>{
+        const id=String(event.requestId||event.id||`${event.date||''}|${event.turno||''}|${event.atualizadoEm||event.timestamp||''}|${event.responsavel||''}`);
+        if(!id||notifiedSubmissionIds_().includes(id))return;
+        markSubmissionNotified_(id);
+        const normalized={...event,requestId:id};
+        fresh.push(normalized);
+        notifyNativeSubmission_(normalized);
+      });
+      if(!fresh.length)return;
+      playSubmissionTone_();
+      const describe=event=>{
+        const turn=String(event.turno||'').toUpperCase()==='MANHÃ'?'Manhã':'Tarde';
+        const name=event.responsavel||'responsável não identificado';
+        return `${turn} por ${name}`;
+      };
+      if(mode==='sync')toast(fresh.length===1?`Contagem da ${describe(fresh[0])} sincronizada com a planilha.`:`${fresh.length} contagens pendentes sincronizadas: ${fresh.map(describe).join('; ')}.`,'success');
+      else if(mode==='local')toast(fresh.length===1?`Contagem da ${describe(fresh[0])} enviada com sucesso.`:`${fresh.length} contagens enviadas com sucesso: ${fresh.map(describe).join('; ')}.`,'success');
+      else toast(fresh.length===1?`Nova contagem recebida: ${describe(fresh[0])}.`:`Novos envios recebidos: ${fresh.map(describe).join('; ')}.`,'success');
+    }
+    function stopSubmissionMonitor_(resetCursor=false){
+      if(state.notificationTimer){clearInterval(state.notificationTimer);state.notificationTimer=null;}
+      if(resetCursor)state.notificationCursor=null;
+    }
+    function notificationAuthPayload_(){
+      if(state.sessionToken)return {sessionToken:state.sessionToken};
+      if(state.operationalSessionToken)return {operationalSessionToken:state.operationalSessionToken};
+      return null;
+    }
+    async function pollSubmissionUpdates_(){
+      if(state.notificationPollBusy||!navigator.onLine)return;
+      const auth=notificationAuthPayload_();if(!auth){stopSubmissionMonitor_();return;}
+      state.notificationPollBusy=true;
+      try{
+        const result=await gasCall({action:'notificationPoll',afterRow:state.notificationCursor,...auth});
+        if(Number.isFinite(Number(result.cursor)))state.notificationCursor=Number(result.cursor);
+        if(result.submissions?.length)processSubmissionNotifications_(result.submissions,'remote');
+      }catch(error){
+        if(/sessão operacional|sessão administrativa|sessão expirou/i.test(error.message||''))stopSubmissionMonitor_();
+      }finally{state.notificationPollBusy=false;}
+    }
+    async function startSubmissionMonitor_(){
+      if(!navigator.onLine||state.notificationTimer||state.notificationMonitorStarting)return;
+      const auth=notificationAuthPayload_();if(!auth)return;
+      state.notificationMonitorStarting=true;
+      try{
+        if(state.notificationCursor===null){
+          const initial=await gasCall({action:'notificationPoll',initialize:true,...auth});
+          state.notificationCursor=Number(initial.cursor)||1;
+        }
+        if(!state.notificationTimer)state.notificationTimer=setInterval(pollSubmissionUpdates_,45000);
+      }catch(error){}
+      finally{state.notificationMonitorStarting=false;}
     }
     function setSyncStatus(text,offline=false){ $('syncText').textContent=text; $('syncPill').classList.toggle('offline',offline); }
     function wait(ms){return new Promise(resolve=>setTimeout(resolve,ms));}
@@ -487,6 +639,7 @@
       $('loginScreen').hidden=true;$('splashScreen').classList.add('fade-out');$('appShell').classList.add('visible');
       showScreen('collectionScreen');
       await initializeApp_(offline);
+      startSubmissionMonitor_();
     }
     async function loginOperational(event){
       event.preventDefault();
@@ -760,7 +913,7 @@
         if(!navigator.onLine||!state.operationalSessionToken){queuePending(payload);setSyncStatus(!navigator.onLine?'Aguardando conexão':'Autenticação necessária',true);if(showToast)toast(!navigator.onLine?'Sem conexão. A contagem ficou salva neste dispositivo e será sincronizada quando a internet voltar.':'A contagem foi guardada. Conecte-se e entre novamente para autorizar a sincronização.','success');return;}
         const result=await gasCall(payload);removePending(payload.date,payload.turno);setSyncStatus('Sincronizado');
         setTurnRecordFromSaveResult_(result,payload.turno,payload.date);
-        if(showToast)toast(`${result.total} presentes enviados ao sistema.`,'success');
+        if(showToast)processSubmissionNotifications_([{requestId:result.requestId,date:payload.date,turno:payload.turno,responsavel:result.responsavel||state.operatorName,atualizadoEm:result.savedAt}],'local');
         return result;
       }catch(err){
         if(err.network){queuePending(payload);setSyncStatus('Aguardando conexão',true);if(showToast)toast('Sem confirmação do servidor. A contagem ficou salva neste dispositivo e entrará na fila.','error');}
@@ -776,14 +929,20 @@
       const queue=getPending();if(!queue.length){setSyncStatus('Conectado');return;}
       if(!state.operationalSessionToken){setSyncStatus('Autenticação necessária',true);return;}
       setSyncStatus(`Sincronizando ${queue.length}`,true);
+      const syncedEvents=[];
       for(const item of queue){
-        try{const result=await gasCall({...item,action:'saveBatch',operatorName:state.operatorName,operationalSessionToken:state.operationalSessionToken});removePending(item.date,item.turno);setTurnRecordFromSaveResult_(result,item.turno,item.date);}
-        catch(err){if(/sessão operacional|sessão expirou/i.test(err.message||''))state.operationalSessionToken=null;setSyncStatus('Sincronização pendente',true);return;}
+        try{
+          const result=await gasCall({...item,action:'saveBatch',operatorName:state.operatorName,operationalSessionToken:state.operationalSessionToken});
+          removePending(item.date,item.turno);setTurnRecordFromSaveResult_(result,item.turno,item.date);
+          syncedEvents.push({requestId:result.requestId,date:item.date,turno:item.turno,responsavel:result.responsavel||state.operatorName,atualizadoEm:result.savedAt});
+        }
+        catch(err){if(/sessão operacional|sessão expirou/i.test(err.message||''))state.operationalSessionToken=null;setSyncStatus('Sincronização pendente',true);if(syncedEvents.length)processSubmissionNotifications_(syncedEvents,'sync');return;}
       }
-      setSyncStatus('Sincronizado');toast('Contagens pendentes sincronizadas.','success');
+      setSyncStatus('Sincronizado');
+      if(syncedEvents.length)processSubmissionNotifications_(syncedEvents,'sync');else toast('Contagens pendentes sincronizadas.','success');
     }
 
-    function showScreen(id){document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));$(id).classList.add('active');$('openAdmin').hidden=(id==='adminScreen');window.scrollTo({top:0,behavior:'smooth'});}
+    function showScreen(id){document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));$(id).classList.add('active');$('openAdmin').hidden=(id==='adminScreen');$('notificationTools').hidden=(id==='summaryScreen');window.scrollTo({top:0,behavior:'smooth'});}
     function openSummary(){
       const records=recordsPayload();const total=records.reduce((s,r)=>s+r.presentes,0);
       $('summaryTotal').textContent=total;$('summaryTurn').textContent=state.turn==='MANHÃ'?'Manhã':'Tarde';
@@ -836,6 +995,7 @@
           showScreen('adminScreen');
         }
         $('pinModal').classList.remove('open');
+        startSubmissionMonitor_();
         if(result.mustChangePin){$('schoolNameInput').value=result.schoolName||state.dashboard?.schoolName||'';$('settingsModal').classList.add('open');$('newPinInput').focus();toast('Por segurança, atualize o PIN administrativo.','success');}
       }catch(err){
         if(enteredFromLogin){
@@ -1080,7 +1240,7 @@
       if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js').catch(()=>{});}
     }
     function startExperience_(){
-      $('footerYear').textContent=new Date().getFullYear();prepareInstallHelp_();
+      $('footerYear').textContent=new Date().getFullYear();prepareInstallHelp_();initializeNotificationPreferences_();
       if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});
       setTimeout(()=>{$('splashScreen').classList.add('fade-out');setTimeout(async()=>{
         $('splashScreen').hidden=true;$('loginScreen').hidden=false;
@@ -1096,7 +1256,7 @@
       },420);},1550);
     }
     function switchOperator_(){
-      clearRememberedLogin_(true);
+      stopSubmissionMonitor_(true);clearRememberedLogin_(true);
       state.operatorName='';state.operationalSessionToken=null;state.sessionToken=null;state.dashboard=null;state.appInitialized=false;state.adminEnteredFromLogin=false;state.turnRecordInfo=null;state.turnSubmitted=false;state.editingTurn=false;
       $('appShell').classList.remove('visible');$('operatorNameInput').value='';$('operationalPinInput').value='';$('operationalPinInput').type='password';$('toggleOperationalPin').setAttribute('aria-pressed','false');$('toggleOperationalPin').setAttribute('aria-label','Mostrar PIN operacional');$('toggleOperationalPin').innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>';$('rememberOperationalLogin').checked=false;$('loginScreen').hidden=false;window.scrollTo(0,0);$('operatorNameInput').focus();
     }
@@ -1110,6 +1270,8 @@
     $('openAdminFromLogin').addEventListener('click',openAdminFlow);
     $('openShareApp').addEventListener('click',openShareModal_);$('openShareFromLogin').addEventListener('click',openShareModal_);
     $('switchOperator').addEventListener('click',switchOperator_);
+    $('toggleNotificationSound').addEventListener('click',toggleNotificationSound_);
+    $('enableBrowserNotifications').addEventListener('click',requestBrowserNotifications_);
     $('copyInstallLink').addEventListener('click',()=>copyText_(appShareUrl_()).then(()=>toast('Link copiado. Abra-o no Safari do iPhone para instalar.','success')).catch(e=>toast(e.message,'error')));
     $('installAppButton').addEventListener('click',showInstallModal_);
     $('reopenInstallButton').addEventListener('click',showInstallModal_);
@@ -1136,9 +1298,10 @@
     $('adminLogout').addEventListener('click',()=>{
       state.sessionToken=null;state.dashboard=null;
       if(state.adminEnteredFromLogin){
+        stopSubmissionMonitor_(true);
         state.adminEnteredFromLogin=false;state.appInitialized=false;state.operatorName='';state.operationalSessionToken=null;
         $('appShell').classList.remove('visible');$('loginScreen').hidden=false;$('operatorNameInput').value='';$('operationalPinInput').value='';window.scrollTo({top:0,behavior:'smooth'});
-      }else{showScreen('collectionScreen');}
+      }else{showScreen('collectionScreen');startSubmissionMonitor_();}
       toast('Sessão administrativa encerrada.');
     });
     $('refreshDashboard').addEventListener('click',()=>loadDashboard().then(()=>toast('Indicadores atualizados.','success')).catch(e=>toast(e.message,'error')));
@@ -1149,14 +1312,21 @@
     $('saveSchoolName').addEventListener('click',saveSchoolName);$('saveNewPin').addEventListener('click',saveNewPin);$('saveOperationalPin').addEventListener('click',saveOperationalPin);
     $('settingsModal').addEventListener('click',e=>{if(e.target===$('settingsModal'))$('settingsModal').classList.remove('open');});
     $('pinModal').addEventListener('click',e=>{if(e.target===$('pinModal'))$('pinModal').classList.remove('open');});
-    window.addEventListener('online',async()=>{if(state.operationalSessionToken){setSyncStatus('Conectado');flushQueue();refreshTodayRecords_().catch(()=>{});}else if(getRememberedLogin_()){setSyncStatus('Validando acesso salvo…',true);const restored=await restoreRememberedSessionAfterOnline_();if(!restored&&getPending().length){setSyncStatus('Autenticação necessária',true);toast('Entre novamente com o PIN operacional para sincronizar as contagens pendentes.','success');}}else if(getPending().length){setSyncStatus('Autenticação necessária',true);toast('Entre novamente com o PIN operacional para sincronizar as contagens pendentes.','success');}else{setSyncStatus('Conectado');}});window.addEventListener('offline',()=>setSyncStatus('Sem conexão',true));
+    window.addEventListener('online',async()=>{
+      if(state.operationalSessionToken){setSyncStatus('Conectado');flushQueue();refreshTodayRecords_().catch(()=>{});}
+      else if(getRememberedLogin_()){setSyncStatus('Validando acesso salvo…',true);const restored=await restoreRememberedSessionAfterOnline_();if(!restored&&getPending().length){setSyncStatus('Autenticação necessária',true);toast('Entre novamente com o PIN operacional para sincronizar as contagens pendentes.','success');}}
+      else if(getPending().length){setSyncStatus('Autenticação necessária',true);toast('Entre novamente com o PIN operacional para sincronizar as contagens pendentes.','success');}
+      else{setSyncStatus('Conectado');}
+      if(state.operationalSessionToken||state.sessionToken)startSubmissionMonitor_();
+    });
+    window.addEventListener('offline',()=>{setSyncStatus('Sem conexão',true);});
     window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();state.installPrompt=e;$('installAppButton').classList.remove('install-hidden');updateInstallModalContent_();});
     window.addEventListener('appinstalled',()=>{state.isStandalone=true;$('installAppButton').classList.add('install-hidden');$('reopenInstallButton').classList.add('install-hidden');$('installModal').classList.remove('open');toast('Fluxo Escolar instalado com sucesso.','success');});
 
     startExperience_();
   </script>
   <style media="print">
-    @page{size:A4;margin:12mm}body{background:#fff!important}.app-header,.app-footer,.auth-screen,.splash-screen,.summary-actions,.summary-top button,.toast,.modal-backdrop,.install-fab{display:none!important}.app-shell{display:block!important}.main{display:block!important;max-width:none!important;margin:0!important;padding:0!important}#collectionScreen,#adminScreen{display:none!important}.summary-screen{display:block!important;min-height:0!important;background:#fff!important;color:#111!important;padding:0!important}.summary-inner{max-width:none}.summary-title,.summary-caption,.summary-sub,.summary-kicker,.summary-shift span,.summary-row span,.summary-date{color:#111!important}.summary-hero,.summary-shift,.summary-row{background:#fff!important;border:1px solid #bbb!important;color:#111!important}.summary-number,.summary-shift strong,.summary-row strong{color:#111!important}.summary-list{grid-template-columns:repeat(4,1fr)!important}
+    @page{size:A4;margin:12mm}body{background:#fff!important}.app-header,.app-footer,.auth-screen,.splash-screen,.notification-tools,.summary-actions,.summary-top button,.toast,.modal-backdrop,.install-fab{display:none!important}.app-shell{display:block!important}.main{display:block!important;max-width:none!important;margin:0!important;padding:0!important}#collectionScreen,#adminScreen{display:none!important}.summary-screen{display:block!important;min-height:0!important;background:#fff!important;color:#111!important;padding:0!important}.summary-inner{max-width:none}.summary-title,.summary-caption,.summary-sub,.summary-kicker,.summary-shift span,.summary-row span,.summary-date{color:#111!important}.summary-hero,.summary-shift,.summary-row{background:#fff!important;border:1px solid #bbb!important;color:#111!important}.summary-number,.summary-shift strong,.summary-row strong{color:#111!important}.summary-list{grid-template-columns:repeat(4,1fr)!important}
   </style>
 </body>
 </html>
